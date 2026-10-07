@@ -1,0 +1,91 @@
+<Window x:Class="RemoteConnectHelper.UI.ConfirmCardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" AllowsTransparency="True" ResizeMode="NoResize"
+        ShowInTaskbar="False" Topmost="True" ShowActivated="False"
+        WindowStartupLocation="Manual"
+        Width="440" Height="288"
+        Background="Transparent" FontFamily="Microsoft YaHei UI">
+    <Grid Background="Transparent">
+        <!-- 指向悬浮球的小尾巴，方位/旋转由代码按球的位置设置 -->
+        <Polygon x:Name="Tail" Points="0,0 18,0 9,11" Fill="#1E1E26"
+                 HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                 Margin="0,0,46,1" RenderTransformOrigin="0.5,0.5">
+            <Polygon.RenderTransform>
+                <RotateTransform x:Name="TailRotate" Angle="0"/>
+            </Polygon.RenderTransform>
+        </Polygon>
+
+        <Border x:Name="CardBorder" Margin="0,0,0,10" CornerRadius="12" Background="#1E1E26"
+                BorderBrush="#3D3D4A" BorderThickness="1" Padding="16"
+                MouseEnter="Card_MouseEnter">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="18" ShadowDepth="0" Opacity="0.55" Color="Black"/>
+            </Border.Effect>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="64"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <!-- 标题行 -->
+                    <Grid Height="28" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox x:Name="AppBox" Width="104" Height="28" SelectedIndex="0"
+                                      FontSize="14" FontWeight="SemiBold"/>
+                            <TextBlock Text="远程连接助手" Foreground="#8A8A96" FontSize="12"
+                                       VerticalAlignment="Center" Margin="10,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- 设备码（独立分组） -->
+                    <Border Background="#26262F" CornerRadius="8" Padding="10,7" Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="设备码" Foreground="#9A9AA6" FontSize="11" Margin="2,0,0,3"/>
+                            <ComboBox x:Name="CodeBox" IsEditable="True" Height="30" FontSize="16"
+                                      FontFamily="Consolas" FontWeight="Bold"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 密码 / 验证码（独立分组，与设备码分开） -->
+                    <Border Background="#26262F" CornerRadius="8" Padding="10,7" Margin="0,0,0,6">
+                        <StackPanel>
+                            <TextBlock Text="密码 / 验证码（无密码即免密直连）" Foreground="#9A9AA6"
+                                       FontSize="11" Margin="2,0,0,3"/>
+                            <Grid Height="28">
+                                <TextBox x:Name="PwdBox" FontSize="15" FontFamily="Consolas"
+                                         VerticalContentAlignment="Center" Padding="4,2"/>
+                                <TextBlock x:Name="PwdFree" Text="免密连接" Foreground="#3AD17A"
+                                           FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
+                                           Margin="4,0,0,0" Visibility="Collapsed"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock x:Name="StatusText" Foreground="#FFB347" FontSize="12"
+                               TextWrapping="Wrap" Margin="2,2,0,4" Visibility="Collapsed"/>
+
+                    <ProgressBar x:Name="CountdownBar" Height="4" Minimum="0" Maximum="8"
+                                 Value="8" Margin="2,2,2,2" Background="#2C2C36"
+                                 Foreground="#7A8194" BorderThickness="0"/>
+                    <TextBlock x:Name="HintText" Foreground="#9A9AA6" FontSize="11"
+                               HorizontalAlignment="Center" Margin="0,3,0,0"/>
+                </StackPanel>
+
+                <!-- 右列：手动关闭 + 截图缩略 -->
+                <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                    <Border x:Name="CloseBtn" Width="24" Height="24" HorizontalAlignment="Right"
+                            Background="Transparent" Cursor="Hand" MouseLeftButtonUp="CloseBtn_Click">
+                        <TextBlock Text="✕" Foreground="#9A9AA6" FontSize="13"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <Border CornerRadius="6" Background="#2C2C36" BorderBrush="#3D3D4A"
+                            BorderThickness="1" Height="46" Margin="0,6,0,0">
+                        <Image x:Name="Thumb" Stretch="Uniform" Margin="2"/>
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

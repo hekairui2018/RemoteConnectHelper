@@ -1,0 +1,14 @@
+# ---- .NET / Visual Studio 构建产物 ----
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# ---- 自测输出目录 ----
+selftest_out/
+
+# ---- 根目录开发期临时产物（仅忽略根目录；testcases/ 下的回归样例图保留）----
+/*.png
+/*.ps1
+/*.txt
