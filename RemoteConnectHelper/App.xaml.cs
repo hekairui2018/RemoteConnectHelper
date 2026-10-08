@@ -128,6 +128,7 @@ public partial class App : System.Windows.Application
     {
         var menu = new WinForms.ContextMenuStrip();
         _menu = menu; // 悬浮球右键复用同一个菜单（点外部/Esc/选完自动关）
+        MenuAutoClose.Attach(menu); // WPF 无激活主窗/不激活悬浮球下，兜底“点菜单外任意位置即关”
 
         var miRecognize = new WinForms.ToolStripMenuItem("立即连接");
         miRecognize.Click += (_, _) => RunPipelineSafe();
