@@ -647,29 +647,34 @@ public partial class App : System.Windows.Application
                 : !result.BrandConfident ? "软件类型无铁证→软件选择卡（不替用户赌）"
                 : "设备码不足9位→手填卡";
             Logger.Info($"分流→确认卡（{why}）");
-            var manual = new ConfirmCardWindow(result, shot, ConnectAsync, _ball?.BoundsRect);
+            var manual = new ConfirmCardWindow(result, shot, MakeCardConfirm(result, shot), _ball?.BoundsRect);
             manual.Show();
             await manual.ClosedTask;
             return;
         }
         Logger.Info("分流→自动直连（品牌铁证 + 设备码≥9位）");
+        await RunConnectWithHudAsync(result, shot);
+    }
 
+    /// <summary>带状态小条 + 取消上下文（Esc/取消按钮/35s 看门狗/点连接后断开兜底）的一次连接；
+    /// 品牌铁证自动直连与确认卡点软件按钮后统一走这里，保证两条路径都能随时停止。</summary>
+    private async Task RunConnectWithHudAsync(RecognizedResult r, BitmapSource? shot)
+    {
         var hud = new StatusHudWindow();
         ConnectionContext? ctx = null;
         hud.OnCancel = () =>
         {
-            Logger.Info("用户在状态小条点取消");
+            Logger.Info("用户在状态小条点取消/Esc");
             ctx?.CancelByUser();
         };
-        hud.OnRetry = () => { Logger.Info("用户在状态小条点重试"); _ = RunAutoAsync(hud, result); };
+        hud.OnRetry = () => { Logger.Info("用户在状态小条点重试"); _ = RunAutoAsync(hud, r); };
         hud.OnManual = () =>
         {
             Logger.Info("用户选手动改/输密码");
-            var card = new ConfirmCardWindow(result, shot, ConnectAsync, _ball?.BoundsRect);
-            card.Show();
+            Dispatcher.Invoke(() => PopManualCard(hud, r, shot, "在卡片上核对设备码/密码后点软件按钮连接"));
         };
         hud.Show();
-        await RunAutoAsync(hud, result);
+        await RunAutoAsync(hud, r);
 
         // 一次自动连接（重试也走这里，每次换新的取消上下文）
         async Task RunAutoAsync(StatusHudWindow h, RecognizedResult r)
@@ -771,7 +776,7 @@ public partial class App : System.Windows.Application
     {
         try
         {
-            var card = new ConfirmCardWindow(r, shot, ConnectAsync, _ball?.BoundsRect, status);
+            var card = new ConfirmCardWindow(r, shot, MakeCardConfirm(r, shot), _ball?.BoundsRect, status);
             card.Show();
             Logger.Info("需要密码/密码未通过，自动弹出预填确认卡供核对");
         }
@@ -790,16 +795,28 @@ public partial class App : System.Windows.Application
            (msg.Contains("密码") || msg.Contains("验证码") || msg.Contains("验证")
             || msg.Contains("解锁") || msg.Contains("凭据"));
 
-    private async Task<ConnectResult> ConnectAsync(RemoteAppKind kind, string code, string password)
+    /// <summary>确认卡点软件按钮后的回调：用人工选定的软件/设备码/密码组一个结果，关掉卡片后走可取消的状态小条连接。
+    /// 必须在 UI 线程调用（内部要 new/Show 状态小条）；连接在独立任务里继续，失败/要密码由状态小条重弹卡片。</summary>
+    private Func<RemoteAppKind, string, string, Task> MakeCardConfirm(RecognizedResult baseResult, BitmapSource? shot)
     {
-        IRemoteConnector connector = kind == RemoteAppKind.Sunlogin
-            ? new SunloginConnector()
-            : new ToDeskConnector();
-        var t = connector.ConnectAsync(code, password);
-        if (await Task.WhenAny(t, Task.Delay(35000)) == t)
-            return await t;
-        Logger.Error("连接总超时（远程软件可能无响应/白屏），判失败");
-        return ConnectResult.Fail("连接超时（远程软件无响应），已取消自动连接，请手动连接");
+        return (kind, code, pwd) =>
+        {
+            var r = new RecognizedResult
+            {
+                Kind = kind,
+                DeviceCode = code,
+                Password = pwd,
+                BrandConfident = true,
+                BrandReason = "确认卡人工选择",
+                CandidateCodes = baseResult.CandidateCodes,
+                CandidatePasswords = baseResult.CandidatePasswords
+            };
+            Logger.Info($"确认卡人工选定→启动可取消连接：{r.KindName} 码={code} 密码={(string.IsNullOrEmpty(pwd) ? "<免密>" : pwd)}");
+            RunConnectWithHudAsync(r, shot).ContinueWith(
+                t => Logger.Error("卡片确认后连接任务异常", t.Exception?.InnerException),
+                TaskContinuationOptions.OnlyOnFaulted);
+            return Task.CompletedTask;
+        };
     }
 
     private static bool IsAutoStartEnabled()
@@ -938,7 +955,27 @@ public partial class App : System.Windows.Application
             Console.WriteLine($"  设备码 : {r.DeviceCode}");
             Console.WriteLine($"  密码   : {(r.HasPassword ? r.Password : "<免密>")}");
             Console.WriteLine($"  候选码 : [{string.Join(", ", r.CandidateCodes)}]");
+            Console.WriteLine($"  候选密码: [{string.Join(", ", r.CandidatePasswords)}]");
             Console.WriteLine($"  错误   : {r.Error ?? "无"}");
+
+            // 未认出设备码时，把四个方向各自的 OCR 结果打出来，定位是方向闸门还是画质问题
+            if (string.IsNullOrWhiteSpace(r.DeviceCode))
+            {
+                Console.WriteLine("[selftest] 未认出设备码，四方向诊断：");
+                foreach (var (name, ang) in new[] { ("0°", 0), ("180°", 180), ("90°", 90), ("270°", 270) })
+                {
+                    var b = ang == 0 ? bmp : OcrService.RotateForOcr(bmp, ang);
+                    var dd = Task.Run(() => OcrService.RecognizeAsync(b)).GetAwaiter().GetResult();
+                    if (dd == null) { Console.WriteLine($"  {name}: OCR null"); continue; }
+                    var rr = _engine.Run(dd);
+                    var rawHits = CodeExtractor.FindDeviceCodes(dd, 9, 10);
+                    Console.WriteLine($"  {name}: 词数={dd.Words.Count} 正立词={OcrOrientation.HasUprightSignal(dd)} " +
+                                      $"码={rr.DeviceCode} 软件={rr.KindName} 密码={(rr.HasPassword ? rr.Password : "<免密>")}");
+                    Console.WriteLine($"      原始码命中: {(rawHits.Count == 0 ? "<无>" : string.Join(" | ", rawHits.Select(h => $"{h.Code}@({h.X:F0},{h.Y:F0},w{h.W:F0},h{h.H:F0})")))}");
+                    foreach (var w in dd.Words.Where(x => x.Text.Any(char.IsDigit)))
+                        Console.WriteLine($"      ({w.X:F0},{w.Y:F0}) {w.Text} [w{w.W:F0} h{w.H:F0}]");
+                }
+            }
         }
         catch (Exception ex)
         {

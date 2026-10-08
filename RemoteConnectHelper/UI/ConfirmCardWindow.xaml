@@ -77,6 +77,7 @@
                                        Foreground="#6A6A76" FontSize="13" IsHitTestVisible="False"
                                        VerticalAlignment="Center" Margin="5,0,0,0"/>
                         </Grid>
+                        <WrapPanel x:Name="PwdCandidatePanel" Margin="2,6,0,0" Visibility="Collapsed"/>
                     </StackPanel>
                 </Border>
 

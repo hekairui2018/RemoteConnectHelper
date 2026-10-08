@@ -23,7 +23,7 @@ namespace RemoteConnectHelper.UI;
 public partial class ConfirmCardWindow : Window
 {
     private readonly RecognizedResult _result;
-    private readonly Func<RemoteAppKind, string, string, Task<ConnectResult>> _connect;
+    private readonly Func<RemoteAppKind, string, string, Task> _onConfirmed;
     private readonly DispatcherTimer _timer;
     private readonly KeyHook _keyHook = new();
 
@@ -44,12 +44,12 @@ public partial class ConfirmCardWindow : Window
     private static readonly Brush IdleFg = new SolidColorBrush(Color.FromRgb(0xC9, 0xC9, 0xD4));
 
     public ConfirmCardWindow(RecognizedResult result, BitmapSource? thumb,
-                             Func<RemoteAppKind, string, string, Task<ConnectResult>> connect,
+                             Func<RemoteAppKind, string, string, Task> onConfirmed,
                              Rect? anchor = null, string? statusOverride = null)
     {
         InitializeComponent();
         _result = result;
-        _connect = connect;
+        _onConfirmed = onConfirmed;
         _focusPwd = !string.IsNullOrEmpty(statusOverride);
 
         // 默认软件：明确 ToDesk 选 ToDesk，其余（向日葵/未知）默认向日葵，回车即可连
@@ -63,6 +63,11 @@ public partial class ConfirmCardWindow : Window
         // 密码框常驻：识别到就预填，没有就留空（水印提示留空＝免密），客服随时可补
         PwdBox.Text = result.Password;
         UpdatePlaceholder();
+        // 密码有多种 OCR 读法时，同样在下方给候选小按钮（图上真实读法，不做机械字符互换）
+        BuildPwdCandidates(result.CandidatePasswords, result.Password);
+        // 候选面板会增高：在按悬浮球定位前，按可见候选行补足窗口高度
+        if (CandidatePanel.Visibility == Visibility.Visible) Height += 30;
+        if (PwdCandidatePanel.Visibility == Visibility.Visible) Height += 30;
         // 截图缩略图已移除：白底纯码缩略会被误看成第二个设备码输入框。thumb 参数保留不展示。
 
         // 状态提示
@@ -160,6 +165,34 @@ public partial class ConfirmCardWindow : Window
             };
             b.Click += (_, _) => { CodeBox.Text = cap; CodeBox.Focus(); Hold(); };
             CandidatePanel.Children.Add(b);
+        }
+    }
+
+    /// <summary>密码有多个 OCR 读法时，在密码框下方列“其它密码”小按钮，点一下即替换（暖色与设备码候选区分）。</summary>
+    private void BuildPwdCandidates(List<string> candidates, string chosen)
+    {
+        var others = candidates.Distinct().Where(c => !string.IsNullOrEmpty(c) && c != chosen).ToList();
+        if (others.Count == 0) return;
+        PwdCandidatePanel.Visibility = Visibility.Visible;
+        PwdCandidatePanel.Children.Add(new TextBlock
+        {
+            Text = "其它密码：", Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9A, 0xA6)),
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0)
+        });
+        foreach (var c in others)
+        {
+            string cap = c;
+            var b = new System.Windows.Controls.Button
+            {
+                Content = cap, Height = 24, Padding = new Thickness(8, 1, 8, 1),
+                Margin = new Thickness(0, 0, 6, 0), FontSize = 12, Cursor = System.Windows.Input.Cursors.Hand,
+                FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+                Background = IdleBg,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xC9, 0x8A)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0x3D, 0x4A))
+            };
+            b.Click += (_, _) => { PwdBox.Text = cap; PwdBox.Focus(); Hold(); UpdatePlaceholder(); };
+            PwdCandidatePanel.Children.Add(b);
         }
     }
 
@@ -340,38 +373,22 @@ public partial class ConfirmCardWindow : Window
 
         _busy = true;
         ShowStatus($"正在打开{KindShortName(kind)}并连接…", "#4C8DFF");
-        HintText.Text = "正在连接，请稍候";
+        HintText.Text = "正在连接，可在状态小条按 Esc 或点「取消连接」中止";
         SetInputsEnabled(false);
         Services.Logger.Info($"卡片确认连接：{KindShortName(kind)} 码={code} 密码={(string.IsNullOrEmpty(pwd) ? "<免密>" : pwd)}");
 
         try
         {
-            var r = await _connect(kind, code, pwd);
-            if (r.Status == ConnectStatus.Launched)
-            {
-                _closedTcs.TrySetResult(true);
-                Close();
-                return;
-            }
-            if (r.Status == ConnectStatus.NeedPassword)
-            {
-                ShowStatus(r.Message, "#FFB347");
-                HintText.Text = "补好密码后点软件按钮 / 回车重试 · Esc 取消";
-                SetInputsEnabled(true);
-                PwdBox.Focus();
-                _busy = false;
-                return;
-            }
-            // Failed
-            ShowStatus(r.Message, "#FF6B6B");
-            HintText.Text = "改好后点软件按钮 / 回车重试 · Esc 取消";
-            SetInputsEnabled(true);
-            _busy = false;
+            // 交给 App：关闭卡片、弹状态小条走可取消连接（Esc/取消按钮/看门狗/点连接后断开兜底都在状态小条上）
+            await _onConfirmed(kind, code, pwd);
+            _closedTcs.TrySetResult(true);
+            Close();
         }
         catch (Exception ex)
         {
-            Services.Logger.Error("卡片连接异常", ex);
+            Services.Logger.Error("卡片发起连接异常", ex);
             ShowStatus("连接异常：" + ex.Message, "#FF6B6B");
+            HintText.Text = "改好后点软件按钮 / 回车重试 · Esc 取消";
             SetInputsEnabled(true);
             _busy = false;
         }

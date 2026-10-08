@@ -3,9 +3,9 @@ using System.Runtime.InteropServices;
 namespace RemoteConnectHelper.Hotkey;
 
 /// <summary>
-/// 低级键盘钩子，仅在确认卡片存活时装载。卡片不抢焦点（ShowActivated=false），
-/// 用它在全局抓 Enter（立即连）/ Esc（取消），并吞掉这两个键，
-/// 避免前台是聊天框时回车误发消息。
+/// 低级键盘钩子。确认卡存活时全局抓 Enter（立即连）/ Esc（关闭）并吞键，避免前台聊天框回车误发消息；
+/// 连接阶段的状态小条只钩 Esc（＝取消连接）、回车放行给前台远程软件（hookEnter:false）。
+/// 窗体不抢焦点（ShowActivated=false），故用全局钩子而不是键盘事件。
 /// </summary>
 public sealed class KeyHook : IDisposable
 {
@@ -32,13 +32,17 @@ public sealed class KeyHook : IDisposable
 
     private IntPtr _hook = IntPtr.Zero;
     private readonly LowLevelKeyboardProc _proc;
+    private readonly bool _hookEnter;
     private bool _fired;
 
     public event Action? EnterPressed;
     public event Action? EscapePressed;
 
-    public KeyHook()
+    /// <param name="hookEnter">是否拦截回车：确认卡传 true（吞回车防误发消息）；
+    /// 连接阶段传 false，只要 Esc 取消连接，回车必须放行给前台远程软件。</param>
+    public KeyHook(bool hookEnter = true)
     {
+        _hookEnter = hookEnter;
         _proc = Callback;
     }
 
@@ -54,7 +58,7 @@ public sealed class KeyHook : IDisposable
         if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN) && !_fired)
         {
             int vk = Marshal.ReadInt32(lParam);
-            if (vk == VK_RETURN)
+            if (vk == VK_RETURN && _hookEnter)
             {
                 _fired = true;
                 EnterPressed?.Invoke();
@@ -64,7 +68,7 @@ public sealed class KeyHook : IDisposable
             {
                 _fired = true;
                 EscapePressed?.Invoke();
-                return (IntPtr)1;
+                return (IntPtr)1; // 确认卡＝关闭卡片；连接状态小条＝取消连接
             }
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);

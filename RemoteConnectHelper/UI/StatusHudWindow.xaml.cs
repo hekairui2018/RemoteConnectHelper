@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using RemoteConnectHelper.Automation;
+using RemoteConnectHelper.Hotkey;
 
 namespace RemoteConnectHelper.UI;
 
@@ -18,6 +19,9 @@ public partial class StatusHudWindow : Window
 
     private ConnectionContext? _ctx;
     private readonly DispatcherTimer _autoClose = new() { Interval = TimeSpan.FromMilliseconds(1500) };
+    private readonly DispatcherTimer _topmostTimer = new() { Interval = TimeSpan.FromMilliseconds(1000) };
+    private KeyHook? _escHook;
+    private bool _connecting;
 
     public StatusHudWindow()
     {
@@ -27,6 +31,42 @@ public partial class StatusHudWindow : Window
         // 上抬到任务栏通知气泡（约占底部 0~100px）之上，避免开机启动气泡遮挡状态小条
         Top = wa.Bottom - Height - 108;
         _autoClose.Tick += (_, _) => { _autoClose.Stop(); Close(); };
+        // 连接中每秒重新置顶：远程软件主窗前置/也置顶时，保证“取消连接”按钮始终可点
+        _topmostTimer.Tick += (_, _) =>
+        {
+            if (!_connecting) { _topmostTimer.Stop(); return; }
+            Topmost = false;
+            Topmost = true;
+        };
+        Closed += (_, _) => { DisarmEscape(); _topmostTimer.Stop(); };
+    }
+
+    /// <summary>连接中：全局钩 Esc＝取消连接（不钩回车，回车放行给前台远程软件）。</summary>
+    private void ArmEscape()
+    {
+        if (_escHook != null) return;
+        var hook = new KeyHook(hookEnter: false);
+        hook.EscapePressed += () => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_connecting && BtnCancel.IsEnabled)
+                BtnCancel_Click(this, new RoutedEventArgs());
+        }));
+        try { hook.Install(); _escHook = hook; }
+        catch (Exception ex) { Services.Logger.Error("状态小条 Esc 钩子装载失败", ex); }
+    }
+
+    /// <summary>离开“连接中”态立即卸载 Esc 钩子，避免吞掉后续远程会话里正常的 Esc。</summary>
+    private void FinishConnecting()
+    {
+        _connecting = false;
+        DisarmEscape();
+        _topmostTimer.Stop();
+    }
+
+    private void DisarmEscape()
+    {
+        try { _escHook?.Dispose(); } catch { }
+        _escHook = null;
     }
 
     /// <summary>绑定当前连接上下文（重试会换一个新的）。</summary>
@@ -48,9 +88,12 @@ public partial class StatusHudWindow : Window
             TitleText.Text = $"正在连接 {appName}…";
             CodeText.Text = code;
             SubText.Text = string.IsNullOrEmpty(password)
-                ? "免密连接 · 正在打开软件填码，点「取消连接」可中止"
-                : $"密码 {password} · 正在填码，点「取消连接」可中止";
+                ? "免密连接 · 正在填码，点「取消连接」或按 Esc 中止"
+                : $"密码 {password} · 正在填码，点「取消连接」或按 Esc 中止";
             ShowButtons(cancel: true);
+            _connecting = true;
+            ArmEscape();
+            _topmostTimer.Start();
         });
     }
 
@@ -59,6 +102,7 @@ public partial class StatusHudWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            FinishConnecting();
             Dot.Fill = MakeBrush("#3AD17A");
             TitleText.Text = "已发起连接";
             CodeText.Text = code;
@@ -73,6 +117,7 @@ public partial class StatusHudWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            FinishConnecting();
             Dot.Fill = MakeBrush("#FF6B6B");
             TitleText.Text = "连接未成功";
             CodeText.Text = code;
@@ -86,6 +131,7 @@ public partial class StatusHudWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            FinishConnecting();
             Dot.Fill = MakeBrush("#FFB347");
             TitleText.Text = "需要密码";
             CodeText.Text = code;
@@ -99,6 +145,7 @@ public partial class StatusHudWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            FinishConnecting();
             Dot.Fill = MakeBrush("#8A8A96");
             TitleText.Text = disconnecting ? "正在断开…" : "已取消";
             CodeText.Text = code;

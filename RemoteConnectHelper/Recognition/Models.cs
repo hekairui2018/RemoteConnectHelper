@@ -46,6 +46,9 @@ public sealed class RecognizedResult
     /// <summary>当有多个候选设备码时列出，供卡片下拉</summary>
     public List<string> CandidateCodes { get; set; } = new();
 
+    /// <summary>密码的其它 OCR 读法候选（来自图上真实识别到的不同短串，非机械字符互换），供卡片点选</summary>
+    public List<string> CandidatePasswords { get; set; } = new();
+
     /// <summary>非空表示识别失败/需要人工，卡片应切手动模式并显示该提示</summary>
     public string? Error { get; set; }
 

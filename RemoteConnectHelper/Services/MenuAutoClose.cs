@@ -10,8 +10,8 @@ namespace RemoteConnectHelper.Services;
 /// 在点悬浮球/桌面等不激活区域时不发生，菜单点外部不消失。这里统一做两件事，托盘菜单与
 /// 悬浮球右键复用同一个 ContextMenuStrip，一处挂载两处生效：
 /// 1) 点外部（任何非菜单窗口/桌面/任务栏/悬浮球）：低级鼠标钩子捕获，立即关闭；
-/// 2) 鼠标只是停在菜单外（含刚右键弹出但鼠标不挪进菜单）：停留满 2 秒自动关闭；
-///    鼠标在菜单内则一直保留，移出后计时、移回复位。Esc/点选菜单项仍走原生 AutoClose。
+/// 2) 鼠标只是停在菜单外：刚弹出、鼠标从未进入满 1 秒自动关（给移入留宽限）；
+///    进过菜单又移出满 0.5 秒关。鼠标在菜单内一直保留、移回复位。Esc/点选菜单项仍走原生 AutoClose。
 /// </summary>
 public static class MenuAutoClose
 {
@@ -20,10 +20,12 @@ public static class MenuAutoClose
     private const int WM_RBUTTONDOWN = 0x0204;
     private const int WM_MBUTTONDOWN = 0x0207;
 
-    /// <summary>鼠标停在菜单外多久后自动关闭。</summary>
-    private static readonly TimeSpan HoverCloseDelay = TimeSpan.FromSeconds(2);
+    /// <summary>刚弹出、鼠标从未进入菜单时，停留多久自动关闭（给鼠标移入留宽限）。</summary>
+    private static readonly TimeSpan FirstOpenDelay = TimeSpan.FromSeconds(1);
+    /// <summary>鼠标进过菜单又移出后，停留多久自动关闭（hover 菜单主流值）。</summary>
+    private static readonly TimeSpan LeaveAfterEnteredDelay = TimeSpan.FromSeconds(0.5);
     /// <summary>悬停判定轮询间隔。</summary>
-    private const int PollMs = 200;
+    private const int PollMs = 100;
     /// <summary>判定“鼠标在菜单内”时向外多算的边距，避免贴边误关。</summary>
     private const int EdgePad = 8;
 
@@ -67,6 +69,7 @@ public static class MenuAutoClose
         IntPtr hMod = GetModuleHandle(null); // 低级鼠标钩子不注入 DLL，传当前模块句柄即可
         LowLevelMouseProc? proc = null;
         DateTime? outsideSince = null;
+        bool everEntered = false;
 
         var timer = new System.Windows.Forms.Timer { Interval = PollMs };
         timer.Tick += (_, _) =>
@@ -80,11 +83,14 @@ public static class MenuAutoClose
                 if (rect.Contains(pos))
                 {
                     outsideSince = null; // 鼠标在菜单内：保持打开
+                    everEntered = true;
                 }
                 else
                 {
                     outsideSince ??= DateTime.UtcNow; // 鼠标在菜单外：开始/继续计时
-                    if (DateTime.UtcNow - outsideSince.Value >= HoverCloseDelay)
+                    // 从未进入给 1 秒移入宽限；进过又移出按 0.5 秒关
+                    var delay = everEntered ? LeaveAfterEnteredDelay : FirstOpenDelay;
+                    if (DateTime.UtcNow - outsideSince.Value >= delay)
                         menu.Close(ToolStripDropDownCloseReason.AppFocusChange);
                 }
             }
@@ -126,6 +132,7 @@ public static class MenuAutoClose
         menu.Opened += (_, _) =>
         {
             outsideSince = null;
+            everEntered = false;
             if (hook == IntPtr.Zero)
                 hook = SetWindowsHookEx(WH_MOUSE_LL, proc, hMod, 0);
             timer.Start();
@@ -135,6 +142,7 @@ public static class MenuAutoClose
         {
             timer.Stop();
             outsideSince = null;
+            everEntered = false;
             if (hook != IntPtr.Zero)
             {
                 UnhookWindowsHookEx(hook);

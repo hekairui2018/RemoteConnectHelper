@@ -344,10 +344,15 @@ public static class CodeExtractor
 
     // ---------- 密码 ----------
 
-    /// <summary>在密码标签同行右侧、下方或上方紧邻处找密码；找不到返回 ""（免密）。</summary>
-    public static string FindPassword(OcrDoc doc, string[] pwdHints, IEnumerable<string> deviceCodes)
+    /// <summary>在密码标签同行右侧、下方或上方紧邻处找密码；找不到返回 ""（免密）。
+    /// out alternatives 同时给出图上 OCR 真实读到的其它密码读法（不同聚簇/弱锚点/残差），供确认卡点选；
+    /// 只收图上真识别到的合规短串，不做机械的字符互换。</summary>
+    public static string FindPassword(OcrDoc doc, string[] pwdHints, IEnumerable<string> deviceCodes,
+                                      out List<string> alternatives)
     {
         var devSet = new HashSet<string>(deviceCodes);
+        // 候选池：(密码串, 可信分)。标签聚簇最可信，弱锚点 +5000、残差 +10000 靠后，只影响候选排序。
+        var pool = new List<(string Raw, double Score)>();
         var lines = BuildLines(doc)
             .Where(l => !IsNoiseLine(l.Text) && !ContactHints.Any(h => l.Text.Contains(h)))
             .ToList();
@@ -428,20 +433,25 @@ public static class CodeExtractor
         }
 
         foreach (var (word, score) in candidates)
-            Consider(word, devSet, score, ref bestAlpha, ref bestAlphaScore, ref bestNum, ref bestNumScore);
+            Consider(word, devSet, score, ref bestAlpha, ref bestAlphaScore, ref bestNum, ref bestNumScore, pool);
 
-        // 精确标签一个都没匹配上（拍屏模糊把“今日验证码”识成“夸日榨证”等）时，用单字“证/密”做弱锚点兜底。
-        // 弱锚点只救含字母的密码（纯数字与设备码难区分，宁可漏为免密/手输也不乱填），并排除品牌名/设备码。
-        if (bestAlpha == null && bestNum == null)
-        {
-            string? weak = FindPasswordByWeakAnchor(lines, devSet);
-            if (!string.IsNullOrEmpty(weak)) return weak;
-            // 聊天两条独立消息“设备码+密码”、无任何标签、顺序不固定：残差法兜底
-            string? residual = FindPasswordByResidual(doc, devSet);
-            if (!string.IsNullOrEmpty(residual)) return residual;
-        }
+        // 弱锚点 / 残差：无论标签是否命中都跑一遍以收集“其它读法候选”；主串仍按 标签→弱锚点→残差 优先级。
+        string? weak = FindPasswordByWeakAnchor(lines, devSet, pool);
+        string? residual = FindPasswordByResidual(doc, devSet, pool);
+        string main = bestAlpha ?? bestNum ?? weak ?? residual ?? "";
 
-        return bestAlpha ?? bestNum ?? "";
+        // 其它候选：按可信分排序，排除设备码/品牌名/主串，最多 3 个
+        alternatives = pool
+            .OrderBy(p => p.Score)
+            .Select(p => p.Raw)
+            .Where(r => r.Length >= 4 && r != main && !devSet.Contains(r)
+                        // 设备码被 OCR 读成形似字母（IOO054911…）时会从密码残差漏进来，形似还原回 9~10 位数字且正是某设备码则剔除
+                        && !(TryDigitLike(r, out var asDigits) && asDigits.Length is >= 9 and <= 10 && devSet.Contains(asDigits))
+                        && !PwdBrandBlock.Any(b => r.ToLowerInvariant().Contains(b)))
+            .Distinct()
+            .Take(3)
+            .ToList();
+        return main;
     }
 
     /// <summary>
@@ -449,7 +459,8 @@ public static class CodeExtractor
     /// 在其同行右侧、上下紧邻行聚簇找密码。只采纳【含字母】的 4~20 位混合串，
     /// 且不得是品牌名、不得含 9 位以上连续数字（设备码），最大限度避免免密界面误抓。
     /// </summary>
-    private static string? FindPasswordByWeakAnchor(List<LogicalLine> lines, HashSet<string> devSet)
+    private static string? FindPasswordByWeakAnchor(List<LogicalLine> lines, HashSet<string> devSet,
+                                                    List<(string Raw, double Score)> pool)
     {
         string? best = null;
         double bestScore = double.MaxValue;
@@ -478,7 +489,7 @@ public static class CodeExtractor
             foreach (var m in ClusterPasswordWords(rightWords))
             {
                 double score = (m.X - anchorRight) + Math.Abs(m.CenterY - line.CenterY);
-                WeakConsider(m, devSet, score, ref best, ref bestScore);
+                WeakConsider(m, devSet, score, ref best, ref bestScore, pool);
             }
 
             // 2) 下方 90px / 上方 80px 紧邻行
@@ -489,14 +500,14 @@ public static class CodeExtractor
                 {
                     double baseScore = Math.Max(below, 0) * 2 + 100;
                     foreach (var m in ClusterPasswordWords(o.Words))
-                        WeakConsider(m, devSet, baseScore + Math.Abs(m.X - anchorX) * 0.3, ref best, ref bestScore);
+                        WeakConsider(m, devSet, baseScore + Math.Abs(m.X - anchorX) * 0.3, ref best, ref bestScore, pool);
                 }
                 double above = line.Y - o.Bottom;
                 if (above is >= -6 and <= 80)
                 {
                     double baseScore = Math.Max(above, 0) * 2 + 120;
                     foreach (var m in ClusterPasswordWords(o.Words))
-                        WeakConsider(m, devSet, baseScore + Math.Abs(m.X - anchorX) * 0.3, ref best, ref bestScore);
+                        WeakConsider(m, devSet, baseScore + Math.Abs(m.X - anchorX) * 0.3, ref best, ref bestScore, pool);
                 }
             }
         }
@@ -540,7 +551,8 @@ public static class CodeExtractor
 
     /// <summary>弱锚点候选筛选：必须含足够字母、4~20 位、非品牌名、形态不像设备码。</summary>
     private static void WeakConsider(OcrWord w, HashSet<string> devSet, double score,
-                                     ref string? best, ref double bestScore)
+                                     ref string? best, ref double bestScore,
+                                     List<(string Raw, double Score)> pool)
     {
         string raw = NormalizePwd(w.Text);
         if (raw.Length is < 4 or > 20) return;
@@ -555,6 +567,7 @@ public static class CodeExtractor
         if (devSet.Contains(raw)) return;
         string low = raw.ToLowerInvariant();
         if (PwdBrandBlock.Any(b => low.Contains(b))) return;
+        pool.Add((raw, 5000 + score));   // 弱锚点候选排在标签聚簇之后
         if (score < bestScore) { bestScore = score; best = raw; }
     }
 
@@ -565,7 +578,8 @@ public static class CodeExtractor
     /// 该短数字独占一行、行内无中文/时间”时才采纳，避免把界面角标、版本号、时间、折扣当密码。
     /// 网址行、联系方式行、品牌名一律排除。
     /// </summary>
-    private static string? FindPasswordByResidual(OcrDoc doc, HashSet<string> devSet)
+    private static string? FindPasswordByResidual(OcrDoc doc, HashSet<string> devSet,
+                                                  List<(string Raw, double Score)> pool)
     {
         var lines = BuildLines(doc)
             .Where(l => !IsNoiseLine(l.Text) && !ContactHints.Any(h => l.Text.Contains(h)))
@@ -600,15 +614,22 @@ public static class CodeExtractor
                 if (norm.Any(char.IsLetter))
                 {
                     // 含字母：远程软件临时密码最常见形态，误报率低，离设备码越近越可信
-                    double score = Math.Abs(line.CenterY - codeY);
+                    double dy = Math.Abs(line.CenterY - codeY);
+                    if (dy > 260) continue;   // 远离设备码行的含字母串（顶部标题栏/广告位/版本号）不是密码
+                    double score = dy;
                     if (norm.Length > 12) score += 500;
+                    pool.Add((norm, 10000 + score));   // 残差候选排在标签/弱锚点之后
                     if (score < alphaScore) { alphaScore = score; alpha = norm; }
                 }
                 else if (norm.Length is >= 4 and <= 8)
                 {
                     // 纯数字短码：必须独占一行（该行只有一个数字段、无中文、不是时间）、且全文长码唯一
                     bool alone = digitsInLine.Count == 1 && !hasChinese && !isTime;
-                    if (alone && longCodeCount == 1) num ??= norm;
+                    if (alone && longCodeCount == 1 && num == null)
+                    {
+                        num = norm;
+                        pool.Add((norm, 10000 + Math.Abs(line.CenterY - codeY)));
+                    }
                 }
             }
         }
@@ -639,7 +660,8 @@ public static class CodeExtractor
 
     private static void Consider(OcrWord w, HashSet<string> devSet, double score,
                                  ref string? bestAlpha, ref double bestAlphaScore,
-                                 ref string? bestNum, ref double bestNumScore)
+                                 ref string? bestNum, ref double bestNumScore,
+                                 List<(string Raw, double Score)> pool)
     {
         string raw = NormalizePwd(w.Text);
         if (raw.Length < 4 || raw.Length > 20) return;
@@ -649,15 +671,16 @@ public static class CodeExtractor
         bool alpha = Regex.IsMatch(raw, "[A-Za-z]");
         if (alpha)
         {
+            pool.Add((raw, score));
             if (score < bestAlphaScore) { bestAlphaScore = score; bestAlpha = raw; }
         }
         else
         {
             // 纯数字：排除 9/10 位设备码，只当 4~8 位安全密码
-            if (raw.Length is >= 4 and <= 8 && score < bestNumScore)
+            if (raw.Length is >= 4 and <= 8)
             {
-                bestNumScore = score;
-                bestNum = raw;
+                pool.Add((raw, score));
+                if (score < bestNumScore) { bestNumScore = score; bestNum = raw; }
             }
         }
     }
@@ -743,8 +766,16 @@ public static class CodeExtractor
         {
             string norm = NormalizePwd(w.Text);
             if (norm.Length < 3) continue;
-            bool eq = string.Equals(norm, password, StringComparison.OrdinalIgnoreCase);
-            bool part = norm.Length >= 4 && password.Contains(norm, StringComparison.OrdinalIgnoreCase);
+            // 精确匹配优先；再按“大写形似字母→数字”宽松匹配：ToDesk 临时密码会先把 OCR 的大写 O 归一成 0，
+            // 若用归一后的密码回原文定位，会因 O/0 不一致找不到密码行，多码场景就锚不到本机码（真机旋转拍屏踩过）。
+            string fn = FuzzyDigitShape(norm);
+            string fp = FuzzyDigitShape(password);
+            bool eq = string.Equals(norm, password, StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(fn, fp, StringComparison.OrdinalIgnoreCase);
+            bool part = norm.Length >= 4 &&
+                        (password.Contains(norm, StringComparison.OrdinalIgnoreCase)
+                         || fp.Contains(fn, StringComparison.OrdinalIgnoreCase)
+                         || fn.Contains(fp, StringComparison.OrdinalIgnoreCase));
             if (eq || part)
             {
                 sum += w.CenterY;
@@ -752,6 +783,26 @@ public static class CodeExtractor
             }
         }
         return n > 0 ? sum / n : null;
+    }
+
+    /// <summary>大写形似字母→数字（O→0、I/L→1、S→5、Z→2、B→8、G→6），其余大写转小写；
+    /// 与 ToDesk 临时密码归一规则一致。仅用于把密码定位回它在图上的行（Y 坐标），不参与判定密码内容，
+    /// 故不影响含大小写的向日葵验证码。</summary>
+    private static string FuzzyDigitShape(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        foreach (char c in s)
+        {
+            if (char.IsUpper(c))
+                sb.Append(c switch
+                {
+                    'O' => '0', 'I' => '1', 'L' => '1', 'S' => '5',
+                    'Z' => '2', 'B' => '8', 'G' => '6',
+                    _ => char.ToLowerInvariant(c)
+                });
+            else sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     /// <summary>

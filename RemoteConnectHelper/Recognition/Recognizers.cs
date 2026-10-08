@@ -19,6 +19,8 @@ public static class OcrOrientation
     {
         "向日葵", "贝锐", "简约版", "sunlogin", "oray", "awesun", "todesk",
         "识别码", "验证码", "远程协助", "设备代码", "设备码", "安全密码", "安全代码", "临时密码",
+        "临时码", "连接模式", "协作模式", "观看模式", "端到端加密", "二次验证", "允许控制",
+        "投屏演示", "互传文件", "应用中心", "返回旧版", "团队版", "全球节点", "控制本设备",
         "远程控制", "邀请", "下载", "伙伴", "此设备", "连接", "设置", "密码", "设备", "远程"
     };
 
@@ -53,14 +55,15 @@ public class SunloginRecognizer : IRecognizer
         var hits = CodeExtractor.FindDeviceCodes(doc, 9, 10);
         var cand = hits.Select(h => h.Code).Distinct().ToList();
         // 先取密码，再用“密码紧邻哪个码”锚定目标设备码（兼容客服端已填表单 vs 客户本机首页）
-        var pwd = CodeExtractor.FindPassword(doc, CodeExtractor.SunloginPwdHints, cand);
+        var pwd = CodeExtractor.FindPassword(doc, CodeExtractor.SunloginPwdHints, cand, out var pwdAlts);
         var hit = CodeExtractor.PickTargetCode(doc, hits, pwd, out var candidates);
         return new RecognizedResult
         {
             Kind = RemoteAppKind.Sunlogin,
             DeviceCode = hit?.Code ?? "",
             CandidateCodes = candidates,
-            Password = pwd
+            Password = pwd,
+            CandidatePasswords = pwdAlts
         };
     }
 
@@ -73,21 +76,38 @@ public class ToDeskRecognizer : IRecognizer
     public RemoteAppKind Kind => RemoteAppKind.ToDesk;
 
     // ToDesk 专属界面词（强信号）。ToDesk 客户端没有“验证码”说法，对应物叫安全/临时密码。
-    private static readonly string[] UiHints = { "设备代码", "安全密码", "安全代码", "临时密码" };
+    // 新版客户端（深色/浅色）把临时密码叫“临时码”，并有连接模式/协作模式/观看模式/端到端加密/
+    // 允许控制本设备/二次验证等专属界面词；左下角品牌 logo 小字常漏识，靠这些词同样能锁定 ToDesk。
+    private static readonly string[] UiHints =
+    {
+        // 旧版/通用术语
+        "设备代码", "安全密码", "安全代码", "临时密码",
+        // 新版（V8 深色/浅色同款）本机码区与连接模式
+        "临时码", "连接模式", "协作模式", "观看模式", "端到端加密", "二次验证", "允许控制本设备",
+        // 新版左侧导航 / 版本 / 广告位专属词（向日葵主界面无这些字样）
+        "投屏演示", "互传文件", "应用中心", "返回旧版", "团队版", "全球节点", "控制本设备"
+    };
 
     public RecognizedResult Extract(OcrDoc doc)
     {
         var hits = CodeExtractor.FindDeviceCodes(doc, 9, 9);
         var cand = hits.Select(h => h.Code).Distinct().ToList();
-        var pwd = NormalizeTodeskTempPassword(
-            CodeExtractor.FindPassword(doc, CodeExtractor.ToDeskPwdHints, cand));
+        var rawPwd = CodeExtractor.FindPassword(doc, CodeExtractor.ToDeskPwdHints, cand, out var rawPwdAlts);
+        var pwd = NormalizeTodeskTempPassword(rawPwd);
         var hit = CodeExtractor.PickTargetCode(doc, hits, pwd, out var candidates);
         return new RecognizedResult
         {
             Kind = RemoteAppKind.ToDesk,
             DeviceCode = hit?.Code ?? "",
             CandidateCodes = candidates,
-            Password = pwd
+            Password = pwd,
+            // 候选密码同样按“临时密码无大写”归一（OCR 常把数字 0 认成大写 O）
+            CandidatePasswords = rawPwdAlts
+                .Select(NormalizeTodeskTempPassword)
+                .Where(a => a.Length >= 4 && a != pwd)
+                .Distinct()
+                .Take(3)
+                .ToList()
         };
     }
 
