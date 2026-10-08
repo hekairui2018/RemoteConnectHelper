@@ -184,7 +184,11 @@ public sealed class SunloginConnector : IRemoteConnector
         var exe = AppPaths.FindSunlogin();
         var win = ScreenOps.Ensure(exe == null ? Array.Empty<string>() : new[] { exe },
                                    Procs, Cls, ClsExclude, Others, ctx);
-        if (win == null) return ConnectResult.Fail("没找到向日葵主窗口，请确认已安装（AweSun.exe）");
+        if (win == null)
+        {
+            Logger.Warn("向日葵 Ensure 未返回主窗口，连接中止（详见上方 启动/驻留/重启 日志）");
+            return ConnectResult.Fail("没找到向日葵主窗口，请确认已安装（AweSun.exe）；若向日葵缩在托盘仍失败，请完全退出向日葵后重试");
+        }
         if (!ScreenOps.EnsureForeground(win, ctx))
             return ConnectResult.Fail("没法把向日葵调到最前（可能被弹窗挡住），为避免连错已取消，请手动切到向日葵再试");
 
@@ -354,7 +358,11 @@ public sealed class ToDeskConnector : IRemoteConnector
         var exe = AppPaths.FindToDesk();
         var win = ScreenOps.Ensure(exe == null ? Array.Empty<string>() : new[] { exe },
                                    Procs, Cls, ClsExclude, Others, ctx);
-        if (win == null) return ConnectResult.Fail("没找到 ToDesk 主窗口，请确认已安装（ToDesk.exe）");
+        if (win == null)
+        {
+            Logger.Warn("ToDesk Ensure 未返回主窗口，连接中止（详见上方 启动/驻留/重启 日志）");
+            return ConnectResult.Fail("没找到 ToDesk 主窗口，请确认已安装（ToDesk.exe）；若 ToDesk 缩在托盘仍失败，请完全退出后重试");
+        }
         if (!ScreenOps.EnsureForeground(win, ctx))
             return ConnectResult.Fail("没法把 ToDesk 调到最前（可能被弹窗挡住），为避免连错已取消，请手动切到 ToDesk 再试");
 

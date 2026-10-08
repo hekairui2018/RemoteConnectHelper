@@ -5,19 +5,7 @@
         ResizeMode="NoResize" ShowInTaskbar="False" Topmost="True" ShowActivated="False"
         WindowStartupLocation="Manual" Width="84" Height="84"
         FontFamily="Microsoft YaHei UI">
-    <Grid>
-        <Grid.ContextMenu>
-            <ContextMenu x:Name="Menu" Opened="Menu_Opened">
-                <MenuItem Header="立即连接" Click="MiRecognize_Click"/>
-                <MenuItem Header="使用说明" Click="MiHelp_Click"/>
-                <MenuItem Header="导出当天日志" Click="MiExportLog_Click"/>
-                <Separator/>
-                <MenuItem x:Name="MiAutoClip" Header="截图后自动连接" IsCheckable="True" Click="MiAutoClip_Click"/>
-                <MenuItem x:Name="MiAutoStart" Header="开机自启" IsCheckable="True" Click="MiAutoStart_Click"/>
-                <Separator/>
-                <MenuItem Header="退出" Click="MiExit_Click"/>
-            </ContextMenu>
-        </Grid.ContextMenu>
+    <Grid Background="Transparent" MouseRightButtonUp="Grid_MouseRightButtonUp">
 
         <Image x:Name="Ball" Width="80" Height="80" Cursor="Hand" Stretch="Uniform"
                Source="pack://application:,,,/Assets/app_logo.png"

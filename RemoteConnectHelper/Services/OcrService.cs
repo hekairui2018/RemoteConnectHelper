@@ -98,6 +98,33 @@ public static class OcrService
         return (rtb, scale);
     }
 
+    /// <summary>把位图顺时针旋转 90/180/270 度，仅用于 OCR 方向兜底（不改动原图，也不影响后续在远程软件窗口上的点击坐标）。
+    /// 绕原点旋转再平移，使内容恰好填满旋转后宽高互换的画布；纯 WPF 渲染，离线、不引第三方库。</summary>
+    public static BitmapSource RotateForOcr(BitmapSource src, int angle)
+    {
+        double w = src.PixelWidth, h = src.PixelHeight;
+        bool swap = angle == 90 || angle == 270;
+        int cw = swap ? (int)h : (int)w;
+        int ch = swap ? (int)w : (int)h;
+
+        var visual = new DrawingVisual();
+        RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
+        using (DrawingContext dc = visual.RenderOpen())
+        {
+            // PushTransform 后压入者先作用于几何，故最终点 = 平移(旋转(p))：
+            // 90°CW (x,y)->(h-y,x)；180 (x,y)->(w-x,h-y)；270°CW (x,y)->(y,w-x)
+            if (angle == 90)        { dc.PushTransform(new TranslateTransform(h, 0)); dc.PushTransform(new RotateTransform(90, 0, 0)); }
+            else if (angle == 180)  { dc.PushTransform(new TranslateTransform(w, h)); dc.PushTransform(new RotateTransform(180, 0, 0)); }
+            else if (angle == 270)  { dc.PushTransform(new TranslateTransform(0, w)); dc.PushTransform(new RotateTransform(270, 0, 0)); }
+            else return src;
+            dc.DrawImage(src, new Rect(0, 0, w, h));
+        }
+        var rtb = new RenderTargetBitmap(Math.Max(1, cw), Math.Max(1, ch), 96, 96, PixelFormats.Pbgra32);
+        rtb.Render(visual);
+        rtb.Freeze();
+        return rtb;
+    }
+
     public static async Task<OcrDoc?> RecognizeAsync(BitmapSource bmp)
     {
         var engine = _engine.Value;

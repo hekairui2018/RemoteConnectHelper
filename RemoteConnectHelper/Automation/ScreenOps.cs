@@ -140,6 +140,7 @@ public static class ScreenOps
                 UseShellExecute = true,
                 WorkingDirectory = Path.GetDirectoryName(exePath),
             });
+            Logger.Info($"启动远程软件：{exePath}");
         }
         catch (Exception ex) { Logger.Error($"启动失败 {exePath}", ex); return null; }
 
@@ -151,7 +152,10 @@ public static class ScreenOps
             var w = FindWindow(processNames, classContains, classExclude);
             if (w != null) return w;
         }
-        return FindWindow(processNames, classContains, classExclude);
+        var none = FindWindow(processNames, classContains, classExclude);
+        if (none == null)
+            Logger.Warn($"启动后等待 {timeoutMs}ms 仍无主窗（{string.Join("/", processNames)}），可能托盘驻留唤不起或权限不足");
+        return none;
     }
 
     /// <summary>前置并强校验前台句柄；失败返回 false（调用方不得盲点）。首次等待更短以提速。</summary>
@@ -334,6 +338,9 @@ public static class ScreenOps
         var win = FindWindow(processNames, classContains, classExclude);
         if (win == null)
         {
+            int reside = 0;
+            foreach (var pn in processNames) reside += Process.GetProcessesByName(pn).Length;
+            Logger.Info($"Ensure 未找到现存主窗（{string.Join("/", processNames)}，驻留进程 {reside} 个），开始启动/唤起");
             foreach (var exe in exePaths)
                 if (!string.IsNullOrEmpty(exe) && File.Exists(exe))
                 {
@@ -387,7 +394,38 @@ public static class ScreenOps
                     break;
                 }
         }
-        if (win == null) return null;
+        // 托盘驻留、二次启动仍唤不出主窗（部分版本托盘态会销毁主窗，单实例再启动不负责显示）：
+        // 结束该软件残留进程后全新启动——等价于手动"退出托盘再打开"。仅在找不到窗的异常路径触发，正常路径不受影响。
+        if (win == null)
+        {
+            var resident = new List<Process>();
+            foreach (var pn in processNames) resident.AddRange(Process.GetProcessesByName(pn));
+            if (resident.Count > 0)
+            {
+                Logger.Warn($"进程已驻留但无主窗（{string.Join("/", processNames)}，{resident.Count}个进程），结束残留后重新启动");
+                foreach (var pr in resident)
+                {
+                    try { pr.Kill(entireProcessTree: true); }
+                    catch { try { pr.Kill(); } catch { } }
+                }
+                Wait(ctx, 700);
+                foreach (var exe in exePaths)
+                    if (!string.IsNullOrEmpty(exe) && File.Exists(exe))
+                    {
+                        win = Launch(exe, processNames, classContains, classExclude, ctx);
+                        if (win != null) break;
+                    }
+                if (win != null) Logger.Info("结束残留进程后重新启动，主窗已出现");
+                else Logger.Warn("结束残留进程并重启后仍无主窗（可能以管理员/服务模式运行致普通权限无法操作，或未安装）");
+            }
+        }
+        if (win == null)
+        {
+            int now = 0;
+            foreach (var pn in processNames) now += Process.GetProcessesByName(pn).Length;
+            Logger.Warn($"Ensure 放弃：仍无主窗（{string.Join("/", processNames)}，进程 {now} 个，exe={string.Join("|", exePaths.Where(static p => !string.IsNullOrEmpty(p)))}）");
+            return null;
+        }
         try { MinimizeProcesses(otherProcesses); } catch { }
         return win;
     }

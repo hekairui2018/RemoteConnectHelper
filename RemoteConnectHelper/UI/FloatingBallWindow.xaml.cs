@@ -1,12 +1,10 @@
 using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-// 工程同时启用 WPF 与 WinForms，显式消歧（Point / MenuItem / MouseEventArgs 两套命名空间都有）
+// 工程同时启用 WPF 与 WinForms，显式消歧（Point / MouseEventArgs 两套命名空间都有）
 using RemoteConnectHelper.Services;
 using Point = System.Windows.Point;
-using MenuItem = System.Windows.Controls.MenuItem;
 using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 
 namespace RemoteConnectHelper.UI;
@@ -20,12 +18,8 @@ namespace RemoteConnectHelper.UI;
 public partial class FloatingBallWindow : Window
 {
     public Action? OnRecognize;
-    public Action? OnHelp;
-    public Action? OnExportLog;
-    public Action? OnExit;
-    public Action<bool>? OnAutoClipChanged;
-    public Action<bool>? OnAutoStartChanged;
-    public event EventHandler? MenuOpening;
+    /// <summary>右键球：请求宿主（App）弹出与托盘共用的 WinForms 菜单（点外部/Esc/选完即关）。</summary>
+    public Action? OnRightClick;
 
     /// <summary>拖动结束，回传新的 Left/Top（DIP）供持久化。</summary>
     public event Action<double, double>? PositionChanged;
@@ -62,9 +56,6 @@ public partial class FloatingBallWindow : Window
         SetWindowLongPtr(helper.Handle, GWL_EXSTYLE,
             new IntPtr(ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE));
     }
-
-    public MenuItem AutoClipItem => MiAutoClip;
-    public MenuItem AutoStartItem => MiAutoStart;
 
     /// <summary>球当前的屏幕矩形（DIP），供确认气泡锚定定位。</summary>
     public Rect BoundsRect => new Rect(Left, Top, BallSize, BallSize);
@@ -170,19 +161,11 @@ public partial class FloatingBallWindow : Window
         }
     }
 
-    private void Menu_Opened(object sender, RoutedEventArgs e) => MenuOpening?.Invoke(this, EventArgs.Empty);
-
-    private void MiRecognize_Click(object sender, RoutedEventArgs e) => OnRecognize?.Invoke();
-
-    private void MiHelp_Click(object sender, RoutedEventArgs e) => OnHelp?.Invoke();
-
-    private void MiExportLog_Click(object sender, RoutedEventArgs e) => OnExportLog?.Invoke();
-
-    private void MiAutoClip_Click(object sender, RoutedEventArgs e)
-        => OnAutoClipChanged?.Invoke(MiAutoClip.IsChecked);
-
-    private void MiAutoStart_Click(object sender, RoutedEventArgs e)
-        => OnAutoStartChanged?.Invoke(MiAutoStart.IsChecked);
-
-    private void MiExit_Click(object sender, RoutedEventArgs e) => OnExit?.Invoke();
+    // 右键不在此弹 WPF ContextMenu：悬浮球是 WS_EX_NOACTIVATE 不激活窗，WPF 菜单收不到"点外部关闭"会卡住；
+    // 改为通知 App 弹出与托盘共用的 WinForms ContextMenuStrip（ToolStripDropDown 点外部/Esc/选完自动关）。
+    private void Grid_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        OnRightClick?.Invoke();
+    }
 }

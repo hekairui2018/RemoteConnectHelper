@@ -8,6 +8,30 @@ namespace RemoteConnectHelper.Recognition;
 /// 三种结果：A 铁证+有码=直连（状态小条不打断）；B 无品牌强信号+有码=弹软件选择卡（默认向日葵，人工二选一）；
 /// C 无码=弹卡手填。绝不因“证/密”等单字或界面颜色替客服赌是哪家。
 /// </summary>
+/// <summary>判断 OCR 文本是否呈“正立可读”方向，用于旋转（90/180/270）兜底时挑选正确方向。
+/// 画面倒置/侧置时，中文会被 Windows OCR 读成形近乱码单字（真机实测“向日葵简约版/验证码”
+/// 倒置后变成“币觏韭襖但刁山”这类孤立单字），不可能拼对下列品牌词或界面词；正立时至少命中其一。
+/// 注意：纯数字/纯字母聊天截图本身没有中文，本信号为 false，由调用方回退尊重原图方向，不据此改判。</summary>
+public static class OcrOrientation
+{
+    // 两家品牌词 + 远程软件常见中文界面词/邀请话术词；只用 2 字以上词，避免乱码单字偶然命中。
+    private static readonly string[] Anchors =
+    {
+        "向日葵", "贝锐", "简约版", "sunlogin", "oray", "awesun", "todesk",
+        "识别码", "验证码", "远程协助", "设备代码", "设备码", "安全密码", "安全代码", "临时密码",
+        "远程控制", "邀请", "下载", "伙伴", "此设备", "连接", "设置", "密码", "设备", "远程"
+    };
+
+    public static bool HasUprightSignal(OcrDoc? doc)
+    {
+        if (doc == null || string.IsNullOrEmpty(doc.FlatText)) return false;
+        var f = doc.FlatText;
+        foreach (var a in Anchors)
+            if (f.Contains(a, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+}
+
 public interface IRecognizer
 {
     RemoteAppKind Kind { get; }

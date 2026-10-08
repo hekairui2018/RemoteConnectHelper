@@ -29,6 +29,7 @@ public partial class App : System.Windows.Application
     private WelcomeWindow? _welcome;
     private ClipboardListenerWindow? _clipListener;
     private FloatingBallWindow? _ball;
+    private WinForms.ContextMenuStrip? _menu;
     private string? _lastPreHash;
     // 截图后后台“预识别”的最近一张远程码结果（含来源图与哈希）。点悬浮球/热键时若剪贴板仍是这张图，
     // 直接复用、跳过现场 OCR，做到“点一下就秒连”；每张截图都会先在这里记住，认出码才缓存。
@@ -126,6 +127,7 @@ public partial class App : System.Windows.Application
     private void SetupTray()
     {
         var menu = new WinForms.ContextMenuStrip();
+        _menu = menu; // 悬浮球右键复用同一个菜单（点外部/Esc/选完自动关）
 
         var miRecognize = new WinForms.ToolStripMenuItem("立即连接");
         miRecognize.Click += (_, _) => RunPipelineSafe();
@@ -374,21 +376,7 @@ public partial class App : System.Windows.Application
             Logger.Info("悬浮球点击，触发识别");
             Dispatcher.BeginInvoke(new Action(RunPipelineSafe));
         };
-        _ball.OnHelp = () => Dispatcher.BeginInvoke(new Action(() => ShowWelcome(false)));
-        _ball.OnExportLog = () => Dispatcher.BeginInvoke(new Action(ExportTodayLog));
-        _ball.OnExit = ExitApp;
-        _ball.OnAutoClipChanged = v =>
-        {
-            _config.AutoConnectOnClipboard = v;
-            _config.Save();
-            Logger.Info("截图后自动连接：" + (v ? "开" : "关"));
-        };
-        _ball.OnAutoStartChanged = v => SetAutoStart(v);
-        _ball.MenuOpening += (_, _) =>
-        {
-            _ball.AutoClipItem.IsChecked = _config.AutoConnectOnClipboard;
-            _ball.AutoStartItem.IsChecked = IsAutoStartEnabled();
-        };
+        _ball.OnRightClick = ShowBallMenu;
         _ball.PositionChanged += (l, t) =>
         {
             _config.BallLeft = l;
@@ -397,6 +385,15 @@ public partial class App : System.Windows.Application
         };
         _ball.Show();
         Logger.Info("北斗悬浮球已显示");
+    }
+
+    /// <summary>悬浮球右键：弹与托盘共用的 WinForms 菜单。WPF 自带 ContextMenu 在不激活悬浮窗
+    /// (WS_EX_NOACTIVATE) 上收不到“点外部关闭”会卡住；ToolStripDropDown 自带消息循环，点外部/Esc/选完即关。</summary>
+    private void ShowBallMenu()
+    {
+        if (_menu == null) return;
+        try { _menu.Show(WinForms.Cursor.Position); }
+        catch (Exception ex) { Logger.Warn("弹出悬浮球右键菜单失败：" + ex.Message); }
     }
 
     /// <summary>把悬浮球显示并提到最前（已在运行时双击桌面图标 = 唤出球，不识别）。</summary>
@@ -421,9 +418,8 @@ public partial class App : System.Windows.Application
             _lastPreHash = hash;
 
             // 每张截图都完整识别一遍（界面码 / 聊天远程码 / 默认向日葵都覆盖），认出码就先记住，等点击再连。
-            var doc = await Task.Run(() => OcrService.RecognizeAsync(shot));
-            if (doc == null) return;
-            var r = _engine.Run(doc);
+            var (doc, r) = await RecognizeWithOrientationAsync(shot);
+            if (doc == null || r == null) return;
             string code = (r.DeviceCode ?? "").Trim().Replace(" ", "");
             if (code.Length < 9)
             {
@@ -450,6 +446,42 @@ public partial class App : System.Windows.Application
         {
             Logger.Warn("剪贴板预识别异常：" + ex.Message);
         }
+    }
+
+    /// <summary>OCR + 方向兜底：先识别正向，只要认出设备码立即返回（日常正向截图零额外开销）；
+    /// 正向没认出码时，依次把图旋转 180/90/270 再识别，首个认出设备码的方向整份采用（品牌/密码同方向），
+    /// 三个方向都没有码则返回正向结果走原分流（弹手填卡）。手机拍屏转了 90/180/270 度也能认。</summary>
+    private async Task<(OcrDoc? doc, RecognizedResult? result)> RecognizeWithOrientationAsync(BitmapSource shot)
+    {
+        var doc = await Task.Run(() => OcrService.RecognizeAsync(shot)).ConfigureAwait(false);
+        if (doc == null) return (null, null);
+        var result = _engine.Run(doc);
+        bool upright = OcrOrientation.HasUprightSignal(doc);
+        // 快路径：认出码且画面文字正立可读（命中品牌/界面词）→ 直接采用。正向截图只做这一次 OCR，零额外开销。
+        if (!string.IsNullOrWhiteSpace(result.DeviceCode) && upright) return (doc, result);
+
+        // 正向无码，或有码但文字不像正立（倒置/侧置时数字会被硬凑成形似的 9 位误码，如 353717031→130111353）：
+        // 逐方向找“认出码 + 文字正立”，首个满足即采用。
+        foreach (var ang in new[] { 180, 90, 270 })
+        {
+            BitmapSource rotated;
+            try { rotated = OcrService.RotateForOcr(shot, ang); }
+            catch (Exception ex) { Logger.Warn($"旋转 {ang}° 位图失败：" + ex.Message); continue; }
+
+            var d2 = await Task.Run(() => OcrService.RecognizeAsync(rotated)).ConfigureAwait(false);
+            if (d2 == null) continue;
+            var r2 = _engine.Run(d2);
+            if (!string.IsNullOrWhiteSpace(r2.DeviceCode) && OcrOrientation.HasUprightSignal(d2))
+            {
+                Logger.Info($"OCR 正向未获“正立设备码”（正向界面词={upright}），旋转 {ang}° 后命中：{r2.KindName} 码={r2.DeviceCode}");
+                return (d2, r2);
+            }
+        }
+        // 各方向都没有“码+正立词”：多为纯数字/纯字母聊天截图（本就无中文锚词），尊重原图正向结果；
+        // 纯数字正立图旋转也不会凭空出现中文词，故这里回退不会把正立改错方向。
+        if (!string.IsNullOrWhiteSpace(result.DeviceCode) && !upright)
+            Logger.Info("未检测到正立界面词，按原图方向采用结果（纯数字聊天或文字过少）；若码异常请在卡片核对");
+        return (doc, result);
     }
 
     /// <summary>16x16 灰度均值哈希，用于"同一张截图不重复预识别"以及点击时核对剪贴板是否仍是那张图。</summary>
@@ -572,14 +604,14 @@ public partial class App : System.Windows.Application
                 return;
             }
             Logger.Info("未命中预识别缓存，现场 OCR");
-            var doc = await Task.Run(() => OcrService.RecognizeAsync(shot));
-            if (doc == null)
+            var (doc, ori) = await RecognizeWithOrientationAsync(shot);
+            if (doc == null || ori == null)
             {
                 _tray?.ShowBalloonTip(2500, AppName, "OCR 识别失败", WinForms.ToolTipIcon.Warning);
                 return;
             }
+            result = ori;
             Logger.Info($"OCR 文本：{doc.FullText.Replace("\r", " ").Replace("\n", " ").Trim()}");
-            result = _engine.Run(doc);
             Logger.Info($"现场OCR 原图={doc.ImgWidth:F0}x{doc.ImgHeight:F0} 放大倍数={doc.ScaleApplied:0.##}");
 
             // 现场 OCR 认出码也回写预识别缓存：远程软件启动可能冲掉剪贴板图，回写后第二次点
@@ -884,9 +916,11 @@ public partial class App : System.Windows.Application
             bmp.EndInit();
             bmp.Freeze();
 
-            var doc = Task.Run(async () => await OcrService.RecognizeAsync(bmp))
-                          .GetAwaiter().GetResult();
-            if (doc == null)
+            // 整包包进线程池任务再阻塞：selftest 跑在 WPF UI 线程，若直接 .GetAwaiter().GetResult()，
+            // 内部 await 会捕获 UI 同步上下文、延续要回到被阻塞的 UI 线程 → 死锁。Task.Run 内无同步上下文。
+            var (doc, r) = Task.Run(async () => await RecognizeWithOrientationAsync(bmp).ConfigureAwait(false))
+                              .GetAwaiter().GetResult();
+            if (doc == null || r == null)
             {
                 Console.WriteLine("[selftest] OCR 返回 null");
                 return;
@@ -897,7 +931,6 @@ public partial class App : System.Windows.Application
             foreach (var w in doc.Words)
                 Console.WriteLine($"  ({w.X,6:F0},{w.Y,4:F0}) {w.Text}");
 
-            var r = _engine.Run(doc);
             Console.WriteLine("---- 识别结果 ----");
             Console.WriteLine($"  软件   : {r.KindName}");
             Console.WriteLine($"  品牌把握: {(r.BrandConfident ? "铁证(直连)" : "待核对(弹气泡)")}");
