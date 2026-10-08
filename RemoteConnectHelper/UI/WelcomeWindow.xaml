@@ -79,8 +79,8 @@
                         <TextBlock Text="1" Foreground="#7FB0FF" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <StackPanel Margin="34,0,0,0">
-                        <TextBlock Text="让客户的远程码显示在屏幕上" Foreground="#F2F2F6" FontSize="13"/>
-                        <TextBlock Text="客户发来的软件截图、或微信/企微里的账号密码图片都行。"
+                        <TextBlock Text="拿到客户的远程码截图" Foreground="#F2F2F6" FontSize="13"/>
+                        <TextBlock Text="按 Win+Shift+S 框住设备码/密码；或在企微、微信、网页的聊天图片上右键 → 复制图片。不用保存文件、也不用手动粘贴。"
                                    Foreground="#9A9AA6" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
                     </StackPanel>
                 </Grid>
@@ -90,8 +90,8 @@
                         <TextBlock Text="2" Foreground="#7FB0FF" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <StackPanel Margin="34,0,0,0">
-                        <TextBlock Text="按 Win + Shift + S，鼠标框住那串设备码 / 密码，松手" Foreground="#F2F2F6" FontSize="13" TextWrapping="Wrap"/>
-                        <TextBlock Text="框选的截图会自动复制，不用粘贴、也不用保存文件。&#10;（聊天图片也可以直接在图片上右键 → 复制）"
+                        <TextBlock Text="点一下北斗悬浮球（或按 Ctrl + Alt + R）" Foreground="#F2F2F6" FontSize="13" TextWrapping="Wrap"/>
+                        <TextBlock Text="截图/复制的同时，它已在后台提前识别并记住，点一下就秒连、不用等；普通截图不会被连接。"
                                    Foreground="#9A9AA6" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
                     </StackPanel>
                 </Grid>
@@ -101,8 +101,9 @@
                         <TextBlock Text="3" Foreground="#7FB0FF" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <StackPanel Margin="34,0,0,0">
-                        <TextBlock Text="截好后点一下北斗悬浮球（或按 Ctrl + Alt + R），立即连接" Foreground="#F2F2F6" FontSize="13" TextWrapping="Wrap"/>
-                        <TextBlock Text="截图的同时它已在后台提前识别并记住，点一下就秒连、不用等；普通截图不会被记住，右下角弹小条时可取消，不会连错人。" Foreground="#9A9AA6" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                        <TextBlock Text="认不准是哪个软件时，点卡片上的大按钮" Foreground="#F2F2F6" FontSize="13" TextWrapping="Wrap"/>
+                        <TextBlock Text="卡片会显示设备码和密码：点【向日葵】或【ToDesk】就连对应软件；没有密码就把密码框留空＝免密直连。Esc / × 或不理它＝不连接，绝不会连错人。"
+                                   Foreground="#9A9AA6" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
                         <WrapPanel Margin="0,4,0,0">
                             <TextBlock Text="想完全不用点？右键悬浮球勾选 " Foreground="#9A9AA6" FontSize="11" VerticalAlignment="Center"/>
                             <Border Background="#26262F" CornerRadius="5" Padding="7,2" VerticalAlignment="Center">
@@ -116,16 +117,16 @@
 
             <Border Background="#26262F" CornerRadius="8" Padding="11,9" Margin="2,14,2,0">
                 <StackPanel>
-                    <TextBlock Text="· 截图里没有密码 = 免密直连。" Foreground="#B8B8C4" FontSize="11"/>
-                    <TextBlock Text="· 认不准 / 没写是哪个软件时，会弹卡片让你核对再连，不会连错人。" Foreground="#B8B8C4" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
-                    <TextBlock Text="· 程序常驻右下角托盘；Win11 点「^」能看到图标，可拖到任务栏，右键图标有菜单。" Foreground="#B8B8C4" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="· 截图里没有密码 = 免密直连；密码长度不固定，卡片上随时能补、能改。" Foreground="#B8B8C4" FontSize="11" TextWrapping="Wrap"/>
+                    <TextBlock Text="· 判软件只看软件名和界面词、不看颜色（向日葵也有白色简约版）；认不准一定弹卡片让你点，绝不替你猜。" Foreground="#B8B8C4" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="· 程序常驻右下角托盘，Win11 点「^」能看到图标；右键悬浮球或托盘图标可「导出当天日志」排查问题。" Foreground="#B8B8C4" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
             </Border>
 
             <!-- 选项 -->
             <CheckBox x:Name="ChkAutoStart" Content="开机自动启动（推荐，客服机日常常驻）"
                       Foreground="#C9C9D4" FontSize="12" Margin="4,14,0,0"/>
-            <CheckBox x:Name="ChkDontShow" Content="以后不再自动弹出本说明（可在托盘右键「使用说明」随时打开）"
+            <CheckBox x:Name="ChkDontShow" Content="以后不再自动弹出本说明（可在悬浮球/托盘右键「使用说明」随时打开）"
                       Foreground="#C9C9D4" FontSize="12" Margin="4,7,0,0"/>
 
             <Button x:Name="BtnOk" Style="{StaticResource PrimaryBtn}" Content="知道了，开始用"

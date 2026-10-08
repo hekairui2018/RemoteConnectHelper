@@ -80,7 +80,8 @@ public partial class App : System.Windows.Application
             _config = AppConfig.Load();
             SetupTray();
             SetupHotkey();
-            Logger.Info("远程连接助手已启动（--hud）");
+            Logger.Info($"远程连接助手已启动（--hud）版本={BuildInfo.Version} 构建={BuildInfo.BuildTime} " +
+                        $"OS={Environment.OSVersion.Version} {OcrService.DescribeEngine()}");
             try
             {
                 var bmp = new BitmapImage();
@@ -116,7 +117,8 @@ public partial class App : System.Windows.Application
         SetupClipboardListener();
         SetupBall();
 
-        Logger.Info("远程连接助手已启动");
+        Logger.Info($"远程连接助手已启动 版本={BuildInfo.Version} 构建={BuildInfo.BuildTime} " +
+                    $"OS={Environment.OSVersion.Version} {OcrService.DescribeEngine()}");
         // 首次启动弹可关闭的使用说明窗（讲清"怎么把截图给它"）；之后不自动弹，托盘右键「使用说明」可随时打开。
         MaybeShowWelcome();
     }
@@ -125,13 +127,19 @@ public partial class App : System.Windows.Application
     {
         var menu = new WinForms.ContextMenuStrip();
 
-        var miRecognize = new WinForms.ToolStripMenuItem("立即识别（从剪贴板）");
+        var miRecognize = new WinForms.ToolStripMenuItem("立即连接");
         miRecognize.Click += (_, _) => RunPipelineSafe();
         menu.Items.Add(miRecognize);
 
         var miHelp = new WinForms.ToolStripMenuItem("使用说明（怎么把截图给它）");
         miHelp.Click += (_, _) => Dispatcher.BeginInvoke(new Action(() => ShowWelcome(false)));
         menu.Items.Add(miHelp);
+
+        var miExport = new WinForms.ToolStripMenuItem("导出当天日志");
+        miExport.Click += (_, _) => Dispatcher.BeginInvoke(new Action(ExportTodayLog));
+        menu.Items.Add(miExport);
+
+        menu.Items.Add(new WinForms.ToolStripSeparator());
 
         var miAutoClip = new WinForms.ToolStripMenuItem("截图后自动连接（认出远程码即连）")
         {
@@ -166,7 +174,9 @@ public partial class App : System.Windows.Application
         var miAbout = new WinForms.ToolStripMenuItem("关于");
         miAbout.Click += (_, _) =>
             System.Windows.MessageBox.Show(
-                "远程连接助手 V1.0\n\n截图客户远程码后按 Ctrl+Alt+R，\n自动识别向日葵/ToDesk 并连接。\n\n快捷键可在配置文件修改：\n%AppData%/RemoteConnectHelper/config.json",
+                $"远程连接助手 V{BuildInfo.Version}\n构建时间：{BuildInfo.BuildTime}\n\n" +
+                "截图客户远程码后点北斗悬浮球（或按 Ctrl+Alt+R），\n自动识别向日葵/ToDesk 并连接；\n认不准软件时点卡片上的软件按钮，密码留空即免密直连。\n\n" +
+                "右键悬浮球/托盘可「导出当天日志」排查问题。",
                 AppName, MessageBoxButton.OK, MessageBoxImage.Information);
         menu.Items.Add(miAbout);
 
@@ -196,7 +206,7 @@ public partial class App : System.Windows.Application
         {
             Logger.Warn("热键注册失败（被占用）");
             _tray?.ShowBalloonTip(4000, AppName,
-                "Ctrl+Alt+R 已被占用，请右键托盘图标用「立即识别」",
+                "Ctrl+Alt+R 已被占用，请右键托盘图标用「立即连接」",
                 WinForms.ToolTipIcon.Warning);
         }
         else
@@ -295,6 +305,56 @@ public partial class App : System.Windows.Application
         w.Show();
     }
 
+    /// <summary>右键菜单“导出当天日志”：复制当天日志到桌面；桌面不可写改弹“另存为”；当天无日志则提示。</summary>
+    private void ExportTodayLog()
+    {
+        try
+        {
+            if (!Logger.TodayLogExists)
+            {
+                System.Windows.MessageBox.Show("今天还没有产生日志。", AppName,
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            string? dst = null;
+            try { dst = Logger.ExportTodayToDesktop(); }
+            catch (Exception ex) { Logger.Warn("导出日志到桌面失败，改弹另存为：" + ex.Message); }
+
+            if (string.IsNullOrEmpty(dst))
+            {
+                var dlg = new Microsoft.Win32.SaveFileDialog
+                {
+                    FileName = $"远程连接助手日志_{DateTime.Now:yyyyMMdd}.log",
+                    Filter = "日志文件 (*.log)|*.log|文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*"
+                };
+                if (dlg.ShowDialog() == true)
+                {
+                    File.Copy(Logger.TodayLogPath, dlg.FileName, true);
+                    dst = dlg.FileName;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(dst))
+            {
+                Logger.Info($"导出当天日志到：{dst}");
+                var r = System.Windows.MessageBox.Show(
+                    "当天日志已导出到：\n" + dst + "\n\n点“是”打开所在文件夹。",
+                    AppName, MessageBoxButton.YesNo, MessageBoxImage.Information);
+                if (r == MessageBoxResult.Yes)
+                {
+                    try { System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{dst}\""); } catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("导出当天日志失败", ex);
+            System.Windows.MessageBox.Show("导出日志失败：" + ex.Message, AppName,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     /// <summary>挂一个隐藏窗监听剪贴板：截图停稳后每张都预识别，认出远程码先记住（默认等点球/热键再连，
     /// 开启“截图后自动连接”时认出即连）。</summary>
     private void SetupClipboardListener()
@@ -315,6 +375,7 @@ public partial class App : System.Windows.Application
             Dispatcher.BeginInvoke(new Action(RunPipelineSafe));
         };
         _ball.OnHelp = () => Dispatcher.BeginInvoke(new Action(() => ShowWelcome(false)));
+        _ball.OnExportLog = () => Dispatcher.BeginInvoke(new Action(ExportTodayLog));
         _ball.OnExit = ExitApp;
         _ball.OnAutoClipChanged = v =>
         {
@@ -374,8 +435,9 @@ public partial class App : System.Windows.Application
             _pre = new PreRecognition { Hash = hash, Shot = shot, Result = r };
             bool canAuto = r.Kind != RemoteAppKind.Unknown && string.IsNullOrEmpty(r.Error) && r.BrandConfident;
             Logger.Info($"剪贴板截图已预识别并记住：{r.KindName} {code} " +
-                        $"密码={(r.HasPassword ? r.Password : "<免密>")}，等待点悬浮球 / 热键连接" +
-                        (canAuto ? "" : "（软件类型把握不足，点击后弹气泡核对）"));
+                        $"密码={(r.HasPassword ? r.Password : "<免密>")} " +
+                        $"原图={doc.ImgWidth:F0}x{doc.ImgHeight:F0} 放大={doc.ScaleApplied:0.##} " +
+                        $"依据=[{r.BrandReason}] 分流={(canAuto ? "直连" : "弹卡选软件")}，等待点悬浮球/热键");
 
             // 仅当用户显式开启“截图后自动连接”时才零按键直连；默认只记住、不自动连。
             if (_config.AutoConnectOnClipboard && canAuto)
@@ -518,11 +580,23 @@ public partial class App : System.Windows.Application
             }
             Logger.Info($"OCR 文本：{doc.FullText.Replace("\r", " ").Replace("\n", " ").Trim()}");
             result = _engine.Run(doc);
+            Logger.Info($"现场OCR 原图={doc.ImgWidth:F0}x{doc.ImgHeight:F0} 放大倍数={doc.ScaleApplied:0.##}");
+
+            // 现场 OCR 认出码也回写预识别缓存：远程软件启动可能冲掉剪贴板图，回写后第二次点
+            // （即使剪贴板已无图）也能走“复用最近一张”，不再误报“剪贴板里没有截图”。
+            string liveCode = (result.DeviceCode ?? "").Trim().Replace(" ", "");
+            if (liveCode.Length >= 9)
+            {
+                string liveHash = QuickHash(shot);
+                _pre = new PreRecognition { Hash = liveHash, Shot = shot, Result = result };
+                _lastPreHash = liveHash;
+                Logger.Info("现场OCR结果已回写缓存，后续点球可复用同一张");
+            }
         }
 
         Logger.Info($"识别结果：{result.KindName} 码={result.DeviceCode} " +
                     $"密码={(result.HasPassword ? result.Password : "<免密>")} " +
-                    $"候选=[{string.Join(",", result.CandidateCodes)}] 错误={result.Error ?? "无"}");
+                    $"候选=[{string.Join(",", result.CandidateCodes)}] 依据=[{result.BrandReason}] 错误={result.Error ?? "无"}");
 
         // 识别成功、即将弹状态小条/手动卡片：先收掉托盘启动气泡，避免两个提示并排让客服困惑
         DismissBalloon();
@@ -536,11 +610,16 @@ public partial class App : System.Windows.Application
                        && autoCode.Length >= 9;
         if (!canAuto)
         {
+            string why = !string.IsNullOrEmpty(result.Error) ? "未认出设备码→手填卡"
+                : !result.BrandConfident ? "软件类型无铁证→软件选择卡（不替用户赌）"
+                : "设备码不足9位→手填卡";
+            Logger.Info($"分流→确认卡（{why}）");
             var manual = new ConfirmCardWindow(result, shot, ConnectAsync, _ball?.BoundsRect);
             manual.Show();
             await manual.ClosedTask;
             return;
         }
+        Logger.Info("分流→自动直连（品牌铁证 + 设备码≥9位）");
 
         var hud = new StatusHudWindow();
         ConnectionContext? ctx = null;
@@ -624,13 +703,15 @@ public partial class App : System.Windows.Application
                     // 成功由状态小条绿色态表达并在 1.5s 后自动关，不再弹气泡，避免两个提示并排
                     h.SetLaunched(final.Message, r.DeviceCode);
                 }
-                else if (final.Status == ConnectStatus.NeedPassword)
-                {
-                    h.SetNeedPassword(final.Message, r.DeviceCode);
-                }
                 else if (final.Status == ConnectStatus.Cancelled)
                 {
                     h.SetCancelled(final.Message, r.DeviceCode, disconnecting);
+                }
+                else if (final.Status == ConnectStatus.NeedPassword || IsPwdIssue(final.Message))
+                {
+                    // 需要密码 / 密码没通过：直接自动弹出预填卡片（码+密码已填好，光标在密码框），
+                    // 客服核对改完点连接即可，不必再去状态小条点“手动改/输密码”
+                    Dispatcher.Invoke(() => PopManualCard(h, r, shot, final.Message));
                 }
                 else
                 {
@@ -651,6 +732,30 @@ public partial class App : System.Windows.Application
             }
         }
     }
+
+    /// <summary>密码没通过/需要密码时，自动在悬浮球旁弹出预填确认卡（码+密码可改），并收起状态小条。</summary>
+    private void PopManualCard(StatusHudWindow h, RecognizedResult r, BitmapSource? shot, string status)
+    {
+        try
+        {
+            var card = new ConfirmCardWindow(r, shot, ConnectAsync, _ball?.BoundsRect, status);
+            card.Show();
+            Logger.Info("需要密码/密码未通过，自动弹出预填确认卡供核对");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("自动弹确认卡失败，回退到状态小条", ex);
+            h.SetNeedPassword(status, r.DeviceCode);
+            return;
+        }
+        h.Close();
+    }
+
+    /// <summary>失败消息是否属于密码/验证码类（这类要弹预填卡，离线/超时等不弹）。</summary>
+    private static bool IsPwdIssue(string? msg)
+        => !string.IsNullOrEmpty(msg) &&
+           (msg.Contains("密码") || msg.Contains("验证码") || msg.Contains("验证")
+            || msg.Contains("解锁") || msg.Contains("凭据"));
 
     private async Task<ConnectResult> ConnectAsync(RemoteAppKind kind, string code, string password)
     {

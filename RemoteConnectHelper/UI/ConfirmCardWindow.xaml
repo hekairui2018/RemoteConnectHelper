@@ -4,7 +4,7 @@
         WindowStyle="None" AllowsTransparency="True" ResizeMode="NoResize"
         ShowInTaskbar="False" Topmost="True" ShowActivated="False"
         WindowStartupLocation="Manual"
-        Width="440" Height="288"
+        Width="440" Height="356"
         Background="Transparent" FontFamily="Microsoft YaHei UI">
     <Grid Background="Transparent">
         <!-- 指向悬浮球的小尾巴，方位/旋转由代码按球的位置设置 -->
@@ -22,70 +22,73 @@
             <Border.Effect>
                 <DropShadowEffect BlurRadius="18" ShadowDepth="0" Opacity="0.55" Color="Black"/>
             </Border.Effect>
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="64"/>
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                    <!-- 标题行 -->
-                    <Grid Height="28" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal">
-                            <ComboBox x:Name="AppBox" Width="104" Height="28" SelectedIndex="0"
-                                      FontSize="14" FontWeight="SemiBold"/>
-                            <TextBlock Text="远程连接助手" Foreground="#8A8A96" FontSize="12"
-                                       VerticalAlignment="Center" Margin="10,0,0,0"/>
-                        </StackPanel>
-                    </Grid>
-
-                    <!-- 设备码（独立分组） -->
-                    <Border Background="#26262F" CornerRadius="8" Padding="10,7" Margin="0,0,0,10">
-                        <StackPanel>
-                            <TextBlock Text="设备码" Foreground="#9A9AA6" FontSize="11" Margin="2,0,0,3"/>
-                            <ComboBox x:Name="CodeBox" IsEditable="True" Height="30" FontSize="16"
-                                      FontFamily="Consolas" FontWeight="Bold"/>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- 密码 / 验证码（独立分组，与设备码分开） -->
-                    <Border Background="#26262F" CornerRadius="8" Padding="10,7" Margin="0,0,0,6">
-                        <StackPanel>
-                            <TextBlock Text="密码 / 验证码（无密码即免密直连）" Foreground="#9A9AA6"
-                                       FontSize="11" Margin="2,0,0,3"/>
-                            <Grid Height="28">
-                                <TextBox x:Name="PwdBox" FontSize="15" FontFamily="Consolas"
-                                         VerticalContentAlignment="Center" Padding="4,2"/>
-                                <TextBlock x:Name="PwdFree" Text="免密连接" Foreground="#3AD17A"
-                                           FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
-                                           Margin="4,0,0,0" Visibility="Collapsed"/>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-
-                    <TextBlock x:Name="StatusText" Foreground="#FFB347" FontSize="12"
-                               TextWrapping="Wrap" Margin="2,2,0,4" Visibility="Collapsed"/>
-
-                    <ProgressBar x:Name="CountdownBar" Height="4" Minimum="0" Maximum="8"
-                                 Value="8" Margin="2,2,2,2" Background="#2C2C36"
-                                 Foreground="#7A8194" BorderThickness="0"/>
-                    <TextBlock x:Name="HintText" Foreground="#9A9AA6" FontSize="11"
-                               HorizontalAlignment="Center" Margin="0,3,0,0"/>
-                </StackPanel>
-
-                <!-- 右列：手动关闭 + 截图缩略 -->
-                <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+            <StackPanel>
+                <!-- 标题行 + 手动关闭 -->
+                <Grid Height="26" Margin="0,0,0,8">
+                    <TextBlock Text="远程连接助手" Foreground="#8A8A96" FontSize="12"
+                               VerticalAlignment="Center"/>
                     <Border x:Name="CloseBtn" Width="24" Height="24" HorizontalAlignment="Right"
                             Background="Transparent" Cursor="Hand" MouseLeftButtonUp="CloseBtn_Click">
                         <TextBlock Text="✕" Foreground="#9A9AA6" FontSize="13"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <Border CornerRadius="6" Background="#2C2C36" BorderBrush="#3D3D4A"
-                            BorderThickness="1" Height="46" Margin="0,6,0,0">
-                        <Image x:Name="Thumb" Stretch="Uniform" Margin="2"/>
-                    </Border>
-                </StackPanel>
-            </Grid>
+                </Grid>
+
+                <!-- 软件二选一：点哪个大按钮就直接连哪家（认不准时人工拍板，绝不替你赌） -->
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="10"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="SunBtn" Grid.Column="0" Height="36" Cursor="Hand"
+                            FontSize="14" FontWeight="SemiBold" Click="SunBtn_Click"
+                            Content="向日葵"/>
+                    <Button x:Name="TdBtn" Grid.Column="2" Height="36" Cursor="Hand"
+                            FontSize="14" FontWeight="SemiBold" Click="TdBtn_Click"
+                            Content="ToDesk"/>
+                </Grid>
+
+                <!-- 设备码（独立分组，深色可编辑；认到多个长码时下方给候选小按钮切换） -->
+                <Border Background="#26262F" CornerRadius="8" Padding="10,7" Margin="0,0,0,8">
+                    <StackPanel>
+                        <TextBlock Text="设备码" Foreground="#9A9AA6" FontSize="11" Margin="2,0,0,3"/>
+                        <TextBox x:Name="CodeBox" Height="32" FontSize="16"
+                                 FontFamily="Consolas" FontWeight="Bold"
+                                 Background="#2C2C36" Foreground="White" CaretBrush="White"
+                                 BorderBrush="#3D3D4A" BorderThickness="1"
+                                 VerticalContentAlignment="Center" Padding="6,1"
+                                 GotFocus="CodeBox_GotFocus" TextChanged="CodeBox_TextChanged"/>
+                        <WrapPanel x:Name="CandidatePanel" Margin="2,6,0,0" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- 密码 / 验证码：常驻可编辑，留空＝免密直连 -->
+                <Border Background="#26262F" CornerRadius="8" Padding="10,7" Margin="0,0,0,6">
+                    <StackPanel>
+                        <TextBlock Text="密码 / 验证码（没有就留空＝免密）" Foreground="#9A9AA6" FontSize="11" Margin="2,0,0,3"/>
+                        <Grid Height="30">
+                            <TextBox x:Name="PwdBox" Height="30" FontSize="15" FontFamily="Consolas"
+                                     Background="Transparent" BorderThickness="0" Foreground="White"
+                                     CaretBrush="White"
+                                     VerticalContentAlignment="Center" Padding="4,3"
+                                     TextChanged="PwdBox_TextChanged"/>
+                            <TextBlock x:Name="PwdPlaceholder" Text="无密码留空＝免密直连"
+                                       Foreground="#6A6A76" FontSize="13" IsHitTestVisible="False"
+                                       VerticalAlignment="Center" Margin="5,0,0,0"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock x:Name="StatusText" Foreground="#FFB347" FontSize="12"
+                           TextWrapping="Wrap" Margin="2,2,0,4" Visibility="Collapsed"/>
+
+                <ProgressBar x:Name="CountdownBar" Height="4" Minimum="0" Maximum="8"
+                             Value="8" Margin="2,2,2,2" Background="#2C2C36"
+                             Foreground="#7A8194" BorderThickness="0"/>
+                <TextBlock x:Name="HintText" Foreground="#9A9AA6" FontSize="11"
+                           HorizontalAlignment="Center" Margin="0,3,0,0"/>
+            </StackPanel>
         </Border>
     </Grid>
 </Window>

@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 // 工程同时启用 WPF 与 WinForms，显式消歧（Point / MenuItem / MouseEventArgs 两套命名空间都有）
+using RemoteConnectHelper.Services;
 using Point = System.Windows.Point;
 using MenuItem = System.Windows.Controls.MenuItem;
 using MouseEventArgs = System.Windows.Input.MouseEventArgs;
@@ -20,6 +21,7 @@ public partial class FloatingBallWindow : Window
 {
     public Action? OnRecognize;
     public Action? OnHelp;
+    public Action? OnExportLog;
     public Action? OnExit;
     public Action<bool>? OnAutoClipChanged;
     public Action<bool>? OnAutoStartChanged;
@@ -141,6 +143,7 @@ public partial class FloatingBallWindow : Window
         double dy = (p.Y - _startScreen.Y) / sy;
 
         if (!_moved && Math.Abs(dx) < DragThreshold && Math.Abs(dy) < DragThreshold) return;
+        if (!_moved) Logger.Info("悬浮球开始拖动（按住移动中，若此后无“拖动结束”即粘住）");
         _moved = true;
         Left = ClampX(_startLeft + dx);
         Top = ClampY(_startTop + dy);
@@ -162,6 +165,7 @@ public partial class FloatingBallWindow : Window
         {
             Left = ClampX(Left);
             Top = ClampY(Top);
+            Logger.Info($"悬浮球拖动结束 Left={Left:F0} Top={Top:F0}");
             PositionChanged?.Invoke(Left, Top);
         }
     }
@@ -171,6 +175,8 @@ public partial class FloatingBallWindow : Window
     private void MiRecognize_Click(object sender, RoutedEventArgs e) => OnRecognize?.Invoke();
 
     private void MiHelp_Click(object sender, RoutedEventArgs e) => OnHelp?.Invoke();
+
+    private void MiExportLog_Click(object sender, RoutedEventArgs e) => OnExportLog?.Invoke();
 
     private void MiAutoClip_Click(object sender, RoutedEventArgs e)
         => OnAutoClipChanged?.Invoke(MiAutoClip.IsChecked);

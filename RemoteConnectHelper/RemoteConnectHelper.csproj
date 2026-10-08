@@ -10,10 +10,24 @@
     <AssemblyName>RemoteConnectHelper</AssemblyName>
     <RootNamespace>RemoteConnectHelper</RootNamespace>
     <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <!-- exe 属性里的“产品版本”带上构建时间（文件版本四段只能是数字，完整时间放这里） -->
+    <InformationalVersion>1.0.0 ($([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm')))</InformationalVersion>
     <Product>远程连接助手</Product>
     <AssemblyTitle>远程连接助手</AssemblyTitle>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <!-- 每次编译把当前时间写进 AssemblyMetadata("BuildTime")，代码反射读取，关于窗/启动日志显示 -->
+  <Target Name="InjectBuildTime" BeforeTargets="GenerateAssemblyInfo">
+    <PropertyGroup>
+      <BuildTime>$([System.DateTime]::Now.ToString("yyyy-MM-dd HH:mm"))</BuildTime>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyMetadata Include="BuildTime" Value="$(BuildTime)" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <!-- Same ico embedded for the tray NotifyIcon (ApplicationIcon only sets the exe/Win32 icon) -->

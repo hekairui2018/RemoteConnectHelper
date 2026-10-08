@@ -8,8 +8,9 @@
     <Grid>
         <Grid.ContextMenu>
             <ContextMenu x:Name="Menu" Opened="Menu_Opened">
-                <MenuItem Header="立即连接刚截的远程码（点一下球也行）" Click="MiRecognize_Click"/>
+                <MenuItem Header="立即连接" Click="MiRecognize_Click"/>
                 <MenuItem Header="使用说明" Click="MiHelp_Click"/>
+                <MenuItem Header="导出当天日志" Click="MiExportLog_Click"/>
                 <Separator/>
                 <MenuItem x:Name="MiAutoClip" Header="截图后自动连接" IsCheckable="True" Click="MiAutoClip_Click"/>
                 <MenuItem x:Name="MiAutoStart" Header="开机自启" IsCheckable="True" Click="MiAutoStart_Click"/>

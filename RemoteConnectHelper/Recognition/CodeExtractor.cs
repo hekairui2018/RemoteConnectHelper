@@ -120,6 +120,26 @@ public static class CodeExtractor
         return result.OrderBy(l => l.CenterY).ToList();
     }
 
+    /// <summary>
+    /// 噪声行：网址 / 下载地址行。向日葵邀请话术尾巴“向日葵下载地址:http://url.oray.com/tGJdas/”
+    /// 里的 tGJdas 绝不能被当成密码；这类行整行不参与取码、取密码。
+    /// </summary>
+    public static bool IsNoiseLine(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return true;
+        if (text.Contains("://") ||
+            text.Contains("http", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("www.", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("url.", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (Regex.IsMatch(text, @"[A-Za-z0-9-]+\.(com|cn|net|org|cc|top|xyz)\b", RegexOptions.IgnoreCase))
+            return true;
+        if ((text.Contains("下载") || text.Contains("网址")) &&
+            (text.Contains("地址") || text.Contains("://") || text.Contains(".")))
+            return true;
+        return false;
+    }
+
     // ---------- 标签 ----------
 
     /// <summary>找第一个（最靠上的）含任一关键词的行锚点。</summary>
@@ -202,6 +222,9 @@ public static class CodeExtractor
             // 联系方式行（电话/手机/QQ/微信…）整行跳过：里面的长数字不是设备码
             if (ContactHints.Any(h => line.Text.Contains(h)))
                 continue;
+            // 网址/下载地址行整行跳过：话术尾巴的短码（如 tGJdas）不能当设备码/密码
+            if (IsNoiseLine(line.Text))
+                continue;
 
             // 明确写了"识别码/账号/设备码/远程控制设备"等标签的行，允许 OCR 切碎的 1~2 位短段参与拼接
             bool codeLabelLine =
@@ -211,11 +234,11 @@ public static class CodeExtractor
 
             var orderedWords = line.Words.OrderBy(w => w.X).ToList();
 
-            // 1) 单词即完整码
+            // 1) 单词即完整码。设备码本应纯数字，OCR 偶尔把数字认成形似字母（0→O、1→I/l、5→S…），
+            //    用 TryDigitLike 把"整词都能映射成数字"的词还原；真英文词含无法映射的字母，直接排除。
             foreach (var w in orderedWords)
             {
-                string d = Regex.Replace(w.Text, @"[^\d]", "");
-                if (Regex.IsMatch(w.Text, @"^\d+$") && d.Length >= minLen && d.Length <= maxLen)
+                if (TryDigitLike(w.Text, out string d) && d.Length >= minLen && d.Length <= maxLen)
                 {
                     // 左侧紧贴一个"1"、拼成 1[3-9]xxxxxxxxx 的是 11 位手机号（OCR 常切成 1+10 位），排除
                     if (IsPhoneWithLeadingOne(orderedWords, w, d)) continue;
@@ -225,10 +248,14 @@ public static class CodeExtractor
 
             // 2) 相邻码段组合。普通行只收 3~6 位整词段防杂散数字；
             //    码标签行放宽到 1~6 位（聊天字体 OCR 会把 157/644 切碎），但拼出长度必须正好落在 9~10 位才采纳。
+            //    段同样走形似字母→数字还原，救模糊图里某段被认成 O/I/S 的情况。
             string segPattern = codeLabelLine ? @"^\d{1,6}$" : @"^\d{3,6}$";
-            var segs = orderedWords
-                .Where(w => Regex.IsMatch(w.Text, segPattern))
-                .ToList();
+            var segs = new List<(OcrWord w, string ds)>();
+            foreach (var w in orderedWords)
+            {
+                if (TryDigitLike(w.Text, out var ds0) && Regex.IsMatch(ds0, segPattern))
+                    segs.Add((w, ds0));
+            }
 
             for (int i = 0; i < segs.Count; i++)
             {
@@ -237,7 +264,7 @@ public static class CodeExtractor
                 OcrWord? prev = null;
                 for (int j = i; j < segs.Count; j++)
                 {
-                    var w = segs[j];
+                    var (w, ds) = segs[j];
                     if (prev != null)
                     {
                         double gap = w.X - prev.Right;
@@ -245,7 +272,7 @@ public static class CodeExtractor
                         // 码段间距小且水平对齐；离太远说明不是同一串码
                         if (gap > prev.H * 1.6 + 30 || sameLine > prev.H * 0.7) break;
                     }
-                    sb.Append(w.Text);
+                    sb.Append(ds);
                     x = x == null ? w.X : Math.Min(x.Value, w.X);
                     y = y == null ? w.Y : Math.Min(y.Value, w.Y);
                     rx = rx == null ? w.Right : Math.Max(rx.Value, w.Right);
@@ -269,6 +296,37 @@ public static class CodeExtractor
         hits.Add(new CodeHit { Code = code, X = x, Y = y, W = rx - x, H = by - y });
     }
 
+    // 设备码强纠错：码段本应纯数字，OCR 常把数字认成形似字母（0→O/o、1→I/l、5→S、2→Z、8→B、
+    // 6→G/b、9→g/q、3→E、7→T、4→A）。仅当整词每个字符都能映射成数字才采纳——真英文词
+    // （ToDesk/ub14/desk 等）含无法映射的字母，会整词排除，不会被拼成假设备码。
+    private static readonly Dictionary<char, char> DigitLikeMap = new()
+    {
+        ['0'] = '0', ['1'] = '1', ['2'] = '2', ['3'] = '3', ['4'] = '4',
+        ['5'] = '5', ['6'] = '6', ['7'] = '7', ['8'] = '8', ['9'] = '9',
+        ['O'] = '0', ['o'] = '0',
+        ['I'] = '1', ['i'] = '1', ['l'] = '1', ['|'] = '1', ['L'] = '1',
+        ['Z'] = '2', ['z'] = '2',
+        ['E'] = '3',
+        ['A'] = '4',
+        ['S'] = '5', ['s'] = '5',
+        ['G'] = '6', ['b'] = '6',
+        ['T'] = '7',
+        ['B'] = '8',
+        ['g'] = '9', ['q'] = '9',
+    };
+
+    private static bool TryDigitLike(string word, out string digits)
+    {
+        var sb = new StringBuilder();
+        foreach (char ch in word)
+        {
+            if (DigitLikeMap.TryGetValue(ch, out char d)) sb.Append(d);
+            else { digits = ""; return false; }
+        }
+        digits = sb.ToString();
+        return digits.Length > 0;
+    }
+
     /// <summary>
     /// 数字词 d 左侧是否紧贴一个单独的"1"，且 "1"+d 拼成 11 位手机号（1[3-9] 开头）。
     /// OCR 常把手机号 13800138000 切成 "1" + "3800138000"，后者正好 10 位会被误当设备码。
@@ -290,7 +348,9 @@ public static class CodeExtractor
     public static string FindPassword(OcrDoc doc, string[] pwdHints, IEnumerable<string> deviceCodes)
     {
         var devSet = new HashSet<string>(deviceCodes);
-        var lines = BuildLines(doc);
+        var lines = BuildLines(doc)
+            .Where(l => !IsNoiseLine(l.Text) && !ContactHints.Any(h => l.Text.Contains(h)))
+            .ToList();
         var labels = FindAllLabels(lines, pwdHints);
 
         string? bestAlpha = null; double bestAlphaScore = double.MaxValue;  // 含字母，最可靠
@@ -376,6 +436,9 @@ public static class CodeExtractor
         {
             string? weak = FindPasswordByWeakAnchor(lines, devSet);
             if (!string.IsNullOrEmpty(weak)) return weak;
+            // 聊天两条独立消息“设备码+密码”、无任何标签、顺序不固定：残差法兜底
+            string? residual = FindPasswordByResidual(doc, devSet);
+            if (!string.IsNullOrEmpty(residual)) return residual;
         }
 
         return bestAlpha ?? bestNum ?? "";
@@ -495,6 +558,76 @@ public static class CodeExtractor
         if (score < bestScore) { bestScore = score; best = raw; }
     }
 
+    /// <summary>
+    /// 残差兜底：没有任何密码标签时（典型＝聊天里两条独立消息“设备码”和“密码”，无品牌无标签、
+    /// 谁在上不一定），从设备码之外的字母数字短串里找密码，天然与上下行顺序无关。
+    /// 含字母的 4~16 位串优先（离设备码纵向近者胜）；纯数字 4~8 位仅在“全文只有一个长码、
+    /// 该短数字独占一行、行内无中文/时间”时才采纳，避免把界面角标、版本号、时间、折扣当密码。
+    /// 网址行、联系方式行、品牌名一律排除。
+    /// </summary>
+    private static string? FindPasswordByResidual(OcrDoc doc, HashSet<string> devSet)
+    {
+        var lines = BuildLines(doc)
+            .Where(l => !IsNoiseLine(l.Text) && !ContactHints.Any(h => l.Text.Contains(h)))
+            .ToList();
+
+        // 全文 9 位及以上长数字串数量；纯数字短密码仅在长码唯一时采纳
+        int longCodeCount = 0;
+        foreach (var l in lines)
+            foreach (Match dm in Regex.Matches(l.Text, @"\d+"))
+                if (dm.Value.Length >= 9) longCodeCount++;
+
+        double codeY = GuessCodeLineY(doc, devSet);
+        string? alpha = null;
+        double alphaScore = double.MaxValue;
+        string? num = null;
+
+        foreach (var line in lines)
+        {
+            var digitsInLine = Regex.Matches(line.Text, @"\d+");
+            bool hasChinese = line.Text.Any(c => c >= 0x4E00 && c <= 0x9FFF);
+            bool isTime = Regex.IsMatch(line.Text, @"\d{1,2}[:：]\d{2}");
+
+            foreach (Match tm in Regex.Matches(line.Text, @"[A-Za-z0-9]+"))
+            {
+                string norm = NormalizePwd(tm.Value);
+                if (norm.Length is < 4 or > 16) continue;
+                if (Regex.IsMatch(norm, @"\d{9,}")) continue;           // 长数字＝设备码
+                if (devSet.Contains(norm)) continue;
+                string low = norm.ToLowerInvariant();
+                if (PwdBrandBlock.Any(b => low.Contains(b))) continue;  // 品牌名不当密码
+
+                if (norm.Any(char.IsLetter))
+                {
+                    // 含字母：远程软件临时密码最常见形态，误报率低，离设备码越近越可信
+                    double score = Math.Abs(line.CenterY - codeY);
+                    if (norm.Length > 12) score += 500;
+                    if (score < alphaScore) { alphaScore = score; alpha = norm; }
+                }
+                else if (norm.Length is >= 4 and <= 8)
+                {
+                    // 纯数字短码：必须独占一行（该行只有一个数字段、无中文、不是时间）、且全文长码唯一
+                    bool alone = digitsInLine.Count == 1 && !hasChinese && !isTime;
+                    if (alone && longCodeCount == 1) num ??= norm;
+                }
+            }
+        }
+        return alpha ?? num;
+    }
+
+    /// <summary>设备码所在行的纵向中心（残差法给密码候选按距离排序用）；找不到返回图中。</summary>
+    private static double GuessCodeLineY(OcrDoc doc, HashSet<string> devSet)
+    {
+        foreach (var l in BuildLines(doc))
+        {
+            string digits = Regex.Replace(l.Text, @"\D", "");
+            if (devSet.Contains(digits)) return l.CenterY;
+            foreach (var c in devSet)
+                if (l.Text.Replace(" ", "").Contains(c)) return l.CenterY;
+        }
+        return doc.ImgHeight / 2.0;
+    }
+
     /// <summary>密码字符清洗：先把 OCR 易把大写 X 误认成的叉号/乘号归一为 X，再只保留字母数字。</summary>
     private static string NormalizePwd(string? text)
     {
@@ -531,7 +664,7 @@ public static class CodeExtractor
 
     // ---------- 目标码选择 ----------
 
-    public static CodeHit? PickTargetCode(OcrDoc doc, List<CodeHit> hits,
+    public static CodeHit? PickTargetCode(OcrDoc doc, List<CodeHit> hits, string password,
                                           out List<string> candidates)
     {
         candidates = hits.Select(h => h.Code).Distinct().ToList();
@@ -540,40 +673,85 @@ public static class CodeExtractor
 
         var lines = BuildLines(doc);
 
-        // 优先：输入区标签。界面可能有多处含"远程控制"字样（如顶部菜单），
-        // 故遍历所有命中标签，只选"正下方 0~130px 内确实有码"的那个，取垂直距离最近的。
+        // 1) 密码锚定（最可靠）：密码紧邻哪个设备码，哪个就是要连的目标。
+        //    客户首页截图里密码在【本机码】旁（输入框残留码无密码）；客服端已填的连接表单里
+        //    密码在【输入框码】下方。两种情况都靠“离密码最近”正确区分，不依赖码在上方还是下方。
+        double? pwdY = LocatePasswordY(doc, password);
+        if (pwdY.HasValue)
+        {
+            var byPwd = hits.OrderBy(h => Math.Abs(h.CenterY - pwdY.Value)).FirstOrDefault();
+            if (byPwd != null && Math.Abs(byPwd.CenterY - pwdY.Value) <= 220)
+                return byPwd;
+        }
+
+        // 2) 无密码（免密）：客户首页截图要连的是客户【本机码】（此设备/允许控制本设备/设备代码区），
+        //    “远程控制设备/请输入伙伴识别码”输入框里的码是客户去连别人的残留，不能当目标。
+        var local = FindLabel(lines, LocalLabelHints);
+        if (local != null)
+        {
+            var nearLocal = hits
+                .OrderBy(h => Math.Abs(h.CenterY - local.CenterY)
+                              + Math.Abs(h.CenterX - local.LabelX) * 0.2)
+                .FirstOrDefault();
+            return nearLocal;
+        }
+
+        // 3) 本机标签被 OCR 切碎时用几何：远程输入区标签【上方】的码即本机码（首页布局本机码在上、
+        //    输入框在下），优先；只有上方确实没有码（纯连接窗）时才取标签正下方输入框里的码。
         var inputAnchors = FindAllLabels(lines, InputLabelHints);
+        CodeHit? abovePick = null;
+        double aboveDy = double.MaxValue;
         CodeHit? inputPick = null;
         double inputPickDy = double.MaxValue;
         foreach (var anc in inputAnchors)
         {
             foreach (var h in hits)
             {
-                if (h.CenterY < anc.LabelY - 10) continue;
-                double dy = h.CenterY - anc.CenterY;
-                if (dy > 140) continue;
-                if (dy < inputPickDy) { inputPickDy = dy; inputPick = h; }
+                if (h.Bottom <= anc.LabelY - 6)
+                {
+                    double dy = anc.LabelY - h.Bottom; // 越贴标签上沿越像本机码
+                    if (dy < aboveDy) { aboveDy = dy; abovePick = h; }
+                }
+                else
+                {
+                    double dy = h.CenterY - anc.CenterY;
+                    if (dy >= -10 && dy <= 140 && dy < inputPickDy) { inputPickDy = dy; inputPick = h; }
+                }
             }
         }
+        if (abovePick != null) return abovePick;
         if (inputPick != null) return inputPick;
 
-        // 其次：本机码标签旁边的码
-        var local = FindLabel(lines, LocalLabelHints);
-        if (local != null)
-        {
-            var near = hits
-                .OrderBy(h => Math.Abs(h.CenterY - local.CenterY)
-                              + Math.Abs(h.CenterX - local.LabelX) * 0.2)
-                .FirstOrDefault();
-            return near;
-        }
-
-        // 聊天截图兜底：无界面输入区/本机标签时，按"密码标签邻近/软件名同行"消歧
+        // 4) 聊天截图兜底：无界面输入区/本机标签时，按"密码标签邻近/软件名同行"消歧
         var chat = PickChatCode(lines, hits);
         if (chat != null) return chat;
 
-        // 多个码且无任何标签，无法区分 → 交人工选
+        // 多个码且无任何标签，无法区分 → 交人工选（候选已带全）
         return null;
+    }
+
+    /// <summary>
+    /// 在 OCR 词里定位已识别密码串的纵向中心（密码可能由多个词拼成，取命中词中心的平均 Y）。
+    /// 定位不到返回 null（免密图）。用于“密码紧邻哪个设备码”的锚定。
+    /// </summary>
+    private static double? LocatePasswordY(OcrDoc doc, string password)
+    {
+        if (string.IsNullOrEmpty(password)) return null;
+        double sum = 0;
+        int n = 0;
+        foreach (var w in doc.Words)
+        {
+            string norm = NormalizePwd(w.Text);
+            if (norm.Length < 3) continue;
+            bool eq = string.Equals(norm, password, StringComparison.OrdinalIgnoreCase);
+            bool part = norm.Length >= 4 && password.Contains(norm, StringComparison.OrdinalIgnoreCase);
+            if (eq || part)
+            {
+                sum += w.CenterY;
+                n++;
+            }
+        }
+        return n > 0 ? sum / n : null;
     }
 
     /// <summary>

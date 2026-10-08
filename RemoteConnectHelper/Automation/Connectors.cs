@@ -337,8 +337,12 @@ public sealed class ToDeskConnector : IRemoteConnector
         "不在线", "不存在", "连接失败", "无法连接", "已离线", "设备离线", "代码错误",
         "识别码错误", "密码错误", "频繁", "有误", "无法找到", "目标设备"
     };
-    private static readonly string[] PwdHints =
-        { "安全密码", "输入密码", "请输入密码", "密码连接", "访问密码", "输入安全密码" };
+    // “输入连接密码”弹窗独有字样（主控台自身的“安全密码连接”不算，避免还没弹窗就误触发）
+    private static readonly string[] PwdDialogHints = { "输入连接密码", "立即连接", "免密连接" };
+    // 密码没通过时弹窗内红字特征（比 Errors 更聚焦，用于弹窗内快速判密码不对、立刻弹改密卡）
+    private static readonly string[] PwdErrHints =
+        { "密码错误", "请重新输入", "重新输入", "密码不正确", "密码有误", "密码不对",
+          "验证码错误", "验证码不正确", "验证失败", "不正确" };
     // 主控台特征词：进入会话/弹窗后这些会消失
     private static readonly string[] ConsoleAnchors = { "远程控制设", "设备代码", "允许控制" };
 
@@ -428,9 +432,12 @@ public sealed class ToDeskConnector : IRemoteConnector
 
     private ConnectResult PostConnect(ConnectionContext? ctx, string password)
     {
-        // 轮询全屏：错误/密码立即返回；主控台特征连续两次消失且无错误→判已进入连接/会话。
-        const int budget = 5000, step = 500;
-        int elapsed = 0, consoleGoneStreak = 0;
+        // 点连接后轮询全屏：错误即返回；出现“输入连接密码”弹窗时，有密码自动填并点“立即连接”、
+        // 无密码点“免密连接”；主控台特征连续两次消失且无弹窗/错误→判已进入会话。可取消。
+        const int step = 500;
+        int elapsed = 0, budget = 6000, consoleGoneStreak = 0;
+        bool pwdFilled = false, freeClicked = false;
+        int? actedAt = null;   // 点下“立即连接/免密连接”的时刻，弹窗久留即判密码没通过
         while (elapsed < budget)
         {
             ctx?.ThrowIfCancellationRequested();
@@ -450,27 +457,109 @@ public sealed class ToDeskConnector : IRemoteConnector
                         if (w != null) { InputSimulator.Click((int)w.CenterX, (int)w.CenterY, 200); ConnWait.Sleep(ctx, 200); }
                     }
                     Logger.Warn("ToDesk 连接返回错误：" + errLine.Text);
+                    bool isPwdErr = errLine.Text.Contains("密码") || errLine.Text.Contains("验证码")
+                                    || errLine.Text.Contains("验证") || errLine.Text.Contains("解锁")
+                                    || errLine.Text.Contains("凭据");
+                    // 密码/验证码类错误 → 弹预填卡片让客服核对重连；设备离线等其它错误才直接失败
+                    if (isPwdErr) return NeedPwdManual(password);
                     return ConnectResult.Fail(errLine.Text.Length > 24 ? "ToDesk 返回：" + errLine.Text : errLine.Text);
                 }
-                if (OcrGeo.ContainsAny(doc, PwdHints))
-                {
-                    if (string.IsNullOrEmpty(password))
-                        return ConnectResult.NeedPwd("对方需要安全密码，截图里没给，请在 ToDesk 里手动输入");
-                    return ConnectResult.NeedPwd("已到 ToDesk 密码步骤，请在弹窗密码框输入后点确定（识别到的密码：" + password + "）");
-                }
 
-                bool consoleStillThere = ConsoleAnchors.Any(a => (doc.FlatText ?? "").Contains(a));
-                if (!consoleStillThere)
+                if (OcrGeo.ContainsAny(doc, PwdDialogHints))
                 {
-                    consoleGoneStreak++;
-                    if (consoleGoneStreak >= 2) return ConnectResult.Ok("已发起 ToDesk 连接（免密）");
+                    consoleGoneStreak = 0; // 弹窗在，会话尚未进入
+                    var nowBtn = ClusterOnLine(doc, lines, "立即连接");
+                    var freeBtn = ClusterOnLine(doc, lines, "免密连接");
+                    var devLine = OcrGeo.FindLineContains(lines, "设备代码");
+
+                    // 已提交过密码、弹窗却出现“密码错误/请重新输入”红字 → 立刻判密码不对，弹卡人工改
+                    if (pwdFilled && lines.Any(l => PwdErrHints.Any(e => l.Text.Contains(e))))
+                    {
+                        Logger.Warn("ToDesk 密码弹窗提示密码错误/重新输入，转人工核对");
+                        return NeedPwdManual(password);
+                    }
+
+                    if (!pwdFilled && !string.IsNullOrEmpty(password))
+                    {
+                        // 密码框中心：横向取两按钮中点（与输入框中心接近），纵向取“设备代码”行→按钮行的 0.40 分位
+                        double cx;
+                        if (freeBtn.HasValue && nowBtn.HasValue) cx = (freeBtn.Value.Cx + nowBtn.Value.Cx) / 2.0;
+                        else if (nowBtn.HasValue) cx = nowBtn.Value.Cx - 95;
+                        else if (devLine != null) cx = (devLine.X0 + devLine.X1) / 2.0 + 80;
+                        else return NeedPwdManual(password);
+
+                        double cy;
+                        if (devLine != null && nowBtn.HasValue) cy = devLine.Y + (nowBtn.Value.Cy - devLine.Y) * 0.40;
+                        else if (nowBtn.HasValue) cy = nowBtn.Value.Cy - 95;
+                        else if (devLine != null) cy = devLine.Y + 62;
+                        else return NeedPwdManual(password);
+
+                        string nb = nowBtn.HasValue ? $"({nowBtn.Value.Cx:F0},{nowBtn.Value.Cy:F0})" : "(未定位)";
+                        Logger.Info($"ToDesk 密码弹窗 填框@({cx:F0},{cy:F0}) 立即连接@{nb}");
+                        InputSimulator.Click((int)cx, (int)cy, 120); // 点密码框聚焦
+                        ConnWait.Sleep(ctx, 380);
+                        ScreenOps.Type(password);
+                        ConnWait.Sleep(ctx, 150);
+                        if (nowBtn.HasValue) InputSimulator.Click((int)nowBtn.Value.Cx, (int)nowBtn.Value.Cy, 220);
+                        pwdFilled = true;
+                        actedAt = elapsed;
+                        budget = Math.Max(budget, elapsed + 6000); // 填完再给 6s 等进会话/报错
+                        Logger.Info("ToDesk 已填密码并点立即连接");
+                    }
+                    else if (!freeClicked && string.IsNullOrEmpty(password))
+                    {
+                        // 没识别到密码：对方若允许免密，点弹窗“免密连接”直连
+                        if (freeBtn.HasValue)
+                        {
+                            InputSimulator.Click((int)freeBtn.Value.Cx, (int)freeBtn.Value.Cy, 220);
+                            freeClicked = true;
+                            actedAt = elapsed;
+                            budget = Math.Max(budget, elapsed + 5000);
+                            Logger.Info("ToDesk 未给密码，点弹窗“免密连接”");
+                        }
+                        else return NeedPwdManual("");
+                    }
+                    // 点过连接 2s 后弹窗仍在（没进会话、也没红字）= 密码没通过/需人工，直接弹预填改密卡，不干等
+                    if (actedAt.HasValue && elapsed - actedAt.Value >= 2000)
+                    {
+                        Logger.Warn("ToDesk 点连接后密码弹窗久留，转人工核对密码");
+                        return NeedPwdManual(password);
+                    }
                 }
-                else consoleGoneStreak = 0;
+                else
+                {
+                    bool consoleStillThere = ConsoleAnchors.Any(a => (doc.FlatText ?? "").Contains(a));
+                    if (!consoleStillThere)
+                    {
+                        consoleGoneStreak++;
+                        if (consoleGoneStreak >= 2) return ConnectResult.Ok("正在连接对方（已进入 ToDesk 会话）");
+                    }
+                    else consoleGoneStreak = 0;
+                }
             }
 
             if (!ConnWait.Sleep(ctx, step)) break;
             elapsed += step;
         }
-        return ConnectResult.Ok("已发起 ToDesk 连接（免密）");
+
+        // 预算耗尽：弹窗仍在=没进去，交人工；弹窗已没=按已发起处理
+        using var last = ScreenOps.CaptureScreen();
+        var lastDoc = ScreenOps.OcrAsync(last).GetAwaiter().GetResult();
+        if (lastDoc != null && OcrGeo.ContainsAny(lastDoc, PwdDialogHints)) return NeedPwdManual(password);
+        return ConnectResult.Ok("已发起 ToDesk 连接");
+    }
+
+    private static ConnectResult NeedPwdManual(string password)
+        => string.IsNullOrEmpty(password)
+            ? ConnectResult.NeedPwd("对方需要密码，请在弹出的卡片里填写后重连")
+            : ConnectResult.NeedPwd("密码可能不对，已在卡片预填 " + password + "，核对后点连接重连");
+
+    /// <summary>在包含 key 的那一行上取 key 文字簇中心（全屏物理坐标，用于点弹窗按钮）。</summary>
+    private static (double Cx, double Cy)? ClusterOnLine(OcrDoc doc, List<OcrGeo.Line> lines, string key)
+    {
+        var line = lines.FirstOrDefault(l => l.Text.Contains(key));
+        if (line == null) return null;
+        var c = OcrGeo.FindCluster(doc, line.Y, 26, key);
+        return c == null ? null : (c.Value.Cx, c.Value.Cy);
     }
 }

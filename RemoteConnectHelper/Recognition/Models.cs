@@ -30,6 +30,8 @@ public sealed class OcrDoc
     public string FlatText { get; set; } = "";
     public double ImgWidth { get; set; }
     public double ImgHeight { get; set; }
+    /// <summary>本次 OCR 前对图像做的放大倍数（词坐标已按该倍数还原回原图坐标系）。1=未放大。</summary>
+    public double ScaleApplied { get; set; } = 1.0;
 }
 
 /// <summary>识别结果</summary>
@@ -50,6 +52,9 @@ public sealed class RecognizedResult
     /// <summary>品牌（是向日葵还是 ToDesk）是否有决定性证据（品牌名/“识别码·验证码” vs “设备代码·安全密码”）。
     /// false=只凭中性词或码长默认 guessed，码虽认到也应弹气泡让客服瞄一眼，防止连错软件。</summary>
     public bool BrandConfident { get; set; } = true;
+
+    /// <summary>品牌判定的人话依据（命中了哪个品牌名/术语，或“无强信号默认向日葵”），仅用于日志复盘。</summary>
+    public string BrandReason { get; set; } = "";
 
     public string KindName => Kind switch
     {
