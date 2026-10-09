@@ -65,6 +65,14 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // 存图链路自测：--shotsnap <图片路径>，对五类“不成功”各存一张 JPG 并打包当天 zip，打印路径后退出
+        if (e.Args.Length >= 2 && e.Args[0] == "--shotsnap")
+        {
+            RunSnapshotTest(e.Args[1]);
+            Shutdown();
+            return;
+        }
+
         // 一键真机回归：--once <图片路径>，识别后直接自动连接（不经卡片），结果写日志/once_result.txt
         if (e.Args.Length >= 2 && e.Args[0] == "--once")
         {
@@ -341,12 +349,18 @@ public partial class App : System.Windows.Application
             if (!string.IsNullOrEmpty(dst))
             {
                 Logger.Info($"导出当天日志到：{dst}");
-                var r = System.Windows.MessageBox.Show(
-                    "当天日志已导出到：\n" + dst + "\n\n点“是”打开所在文件夹。",
-                    AppName, MessageBoxButton.YesNo, MessageBoxImage.Information);
+                // 当天若有“不成功”留存的截图，把日志+截图打成一个 zip 一起导出，便于发回复盘判错现场
+                string? zip = null;
+                try { zip = SnapshotStore.ExportTodayBundle(Logger.TodayLogPath, DateTime.Now.ToString("yyyyMMdd")); }
+                catch (Exception zex) { Logger.Warn("打包日志截图失败：" + zex.Message); }
+                string focus = zip ?? dst;
+                string tip = zip != null
+                    ? "当天日志和异常截图已打包导出到：\n" + zip + "\n\n（压缩包内含日志 .log 和 shots 截图）\n点“是”打开所在文件夹。"
+                    : "当天日志已导出到：\n" + dst + "\n\n点“是”打开所在文件夹。";
+                var r = System.Windows.MessageBox.Show(tip, AppName, MessageBoxButton.YesNo, MessageBoxImage.Information);
                 if (r == MessageBoxResult.Yes)
                 {
-                    try { System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{dst}\""); } catch { }
+                    try { System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{focus}\""); } catch { }
                 }
             }
         }
@@ -608,6 +622,7 @@ public partial class App : System.Windows.Application
             var (doc, ori) = await RecognizeWithOrientationAsync(shot);
             if (doc == null || ori == null)
             {
+                SnapshotStore.Save("nocode", null, shot); // 没认出图：留存原图便于复盘
                 _tray?.ShowBalloonTip(2500, AppName, "OCR 识别失败", WinForms.ToolTipIcon.Warning);
                 return;
             }
@@ -647,6 +662,9 @@ public partial class App : System.Windows.Application
                 : !result.BrandConfident ? "软件类型无铁证→软件选择卡（不替用户赌）"
                 : "设备码不足9位→手填卡";
             Logger.Info($"分流→确认卡（{why}）");
+            // 没能自动直连（未认出码/软件无铁证要人工选/码不足）：不成功，留存原图
+            SnapshotStore.Save(!string.IsNullOrEmpty(result.Error) || autoCode.Length < 9 ? "nocode" : "pickbrand",
+                               result.DeviceCode, shot);
             var manual = new ConfirmCardWindow(result, shot, MakeCardConfirm(result, shot), _ball?.BoundsRect);
             manual.Show();
             await manual.ClosedTask;
@@ -738,8 +756,11 @@ public partial class App : System.Windows.Application
 
                 if (final.Status == ConnectStatus.Launched)
                 {
+                    // 明确进入会话(消息含“会话”)算成功不留图；仅“已发起”但没探到会话窗=未确认，留存复盘
+                    if (final.Message?.Contains("已发起") == true)
+                        SnapshotStore.Save("unconfirmed", r.DeviceCode, shot);
                     // 成功由状态小条绿色态表达并在 1.5s 后自动关，不再弹气泡，避免两个提示并排
-                    h.SetLaunched(final.Message, r.DeviceCode);
+                    h.SetLaunched(final.Message ?? "已发起连接", r.DeviceCode);
                 }
                 else if (final.Status == ConnectStatus.Cancelled)
                 {
@@ -747,12 +768,14 @@ public partial class App : System.Windows.Application
                 }
                 else if (final.Status == ConnectStatus.NeedPassword || IsPwdIssue(final.Message))
                 {
-                    // 需要密码 / 密码没通过：直接自动弹出预填卡片（码+密码已填好，光标在密码框），
+                    // 需要密码 / 密码没通过：不成功，留存原图；直接自动弹出预填卡片（码+密码已填好，光标在密码框），
                     // 客服核对改完点连接即可，不必再去状态小条点“手动改/输密码”
+                    SnapshotStore.Save("needpwd", r.DeviceCode, shot);
                     Dispatcher.Invoke(() => PopManualCard(h, r, shot, final.Message));
                 }
                 else
                 {
+                    SnapshotStore.Save("failed", r.DeviceCode, shot); // 红字失败/超时：不成功，留存原图
                     h.SetFailed(final.Message, r.DeviceCode);
                 }
             }
@@ -766,7 +789,10 @@ public partial class App : System.Windows.Application
                     h.SetCancelled(clicked ? "已尝试断开，请确认远程会话已关闭" : "已取消，未发起连接",
                         r.DeviceCode, clicked);
                 else
+                {
+                    SnapshotStore.Save("failed", r.DeviceCode, shot); // 非用户取消的异常=不成功，留存
                     h.SetFailed("出错了：" + ex.Message, r.DeviceCode);
+                }
             }
         }
     }
@@ -915,6 +941,32 @@ public partial class App : System.Windows.Application
                 $"{status}\t{cleanMsg}\r\n{kind}\t{code}\t{pwd}");
         }
         catch { }
+    }
+
+    /// <summary>异常截图留存链路自测：载入一张图，对五类不成功各存一张 JPG，再打包当天 zip，打印产物路径。</summary>
+    private void RunSnapshotTest(string imgPath)
+    {
+        try
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.UriSource = new Uri(Path.GetFullPath(imgPath));
+            bmp.EndInit();
+            bmp.Freeze();
+            Console.WriteLine($"载入 {Path.GetFileName(imgPath)}  {bmp.PixelWidth}x{bmp.PixelHeight} fmt={bmp.Format}");
+            foreach (var k in new[] { "nocode", "pickbrand", "needpwd", "failed", "unconfirmed" })
+                Console.WriteLine($"  Save({k}) -> {SnapshotStore.Save(k, "905098332", bmp)}");
+            var shots = SnapshotStore.TodayFiles();
+            Console.WriteLine($"TodayFiles={shots.Count}");
+            foreach (var f in shots) Console.WriteLine("  shot: " + new FileInfo(f).Name + $" ({new FileInfo(f).Length / 1024}KB)");
+            string? zip = SnapshotStore.ExportTodayBundle(Logger.TodayLogPath, DateTime.Now.ToString("yyyyMMdd"));
+            Console.WriteLine($"Bundle zip -> {zip ?? "(null)"}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("SNAPSHOT_TEST_FAIL: " + ex);
+        }
     }
 
     private void RunSelfTest(string imgPath)
