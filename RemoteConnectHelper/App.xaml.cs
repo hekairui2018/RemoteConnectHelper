@@ -1080,18 +1080,23 @@ public partial class App : System.Windows.Application
 
     private void ExitApp()
     {
-        try { _ball?.Close(); } catch { }
+        Logger.Info("收到退出指令，开始收尾退出…");
+        try { _ball?.Close(); } catch (Exception ex) { Logger.Warn("退出时关闭悬浮球异常：" + ex.Message); }
         try { _clipListener?.Close(); } catch { }
         try { _recognizeEvent?.Dispose(); } catch { }
         _recognizeEvent = null;
         try { _hotkey?.Dispose(); } catch { }
-        if (_tray != null)
+        try
         {
-            _tray.Visible = false;
-            _tray.Dispose();
+            if (_tray != null) { _tray.Visible = false; _tray.Dispose(); }
         }
-        _appIcon?.Dispose();
-        _mutex?.ReleaseMutex();
-        Shutdown();
+        catch (Exception ex) { Logger.Warn("退出时释放托盘异常：" + ex.Message); }
+        try { _menu?.Dispose(); } catch { }
+        try { _appIcon?.Dispose(); } catch { }
+        try { _mutex?.ReleaseMutex(); } catch { }
+        try { Shutdown(); } catch (Exception ex) { Logger.Warn("Shutdown 异常：" + ex.Message); }
+        // 硬兜底：任何前台线程/隐藏窗/残留钩子导致 Dispatcher 没退干净时，强制结束进程，保证“退出”一定有效。
+        Logger.Info("退出收尾完成，强制结束进程");
+        Environment.Exit(0);
     }
 }

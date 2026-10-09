@@ -107,15 +107,34 @@ public static class MenuAutoClose
                 try
                 {
                     var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
-                    IntPtr under = WindowFromPoint(data.pt);
-                    var sb = new StringBuilder(256);
-                    GetClassName(under, sb, sb.Capacity);
-                    string cls = sb.ToString();
 
-                    // 点在菜单窗口本身（类名含 ToolStrip，含边框）内不干预，交给 Click 与 AutoClose；
-                    // 点到任何其他窗口、桌面、任务栏或不激活的悬浮球，立即关闭。
-                    if (under == IntPtr.Zero ||
-                        cls.IndexOf("ToolStrip", StringComparison.OrdinalIgnoreCase) < 0)
+                    // 优先按“视觉上的菜单矩形”判断：点击点落在菜单矩形(加边距)内就算菜单内。
+                    // 悬浮球是 topmost 分层窗，菜单最底一项“退出”视觉上若压着球，WindowFromPoint
+                    // 会返回球而非菜单；只认类名会误判成“点外部”，在鼠标抬起触发 Click 前就关掉菜单，
+                    // 表现为点“退出”没反应。矩形最贴近视觉，优先采用。
+                    bool inside = false;
+                    try
+                    {
+                        var rc = menu.RectangleToScreen(menu.ClientRectangle);
+                        rc.Inflate(EdgePad, EdgePad);
+                        inside = rc.Contains(data.pt.X, data.pt.Y);
+                    }
+                    catch { /* 菜单尚未布局好，退回类名判断 */ }
+
+                    if (!inside)
+                    {
+                        IntPtr under = WindowFromPoint(data.pt);
+                        var sb = new StringBuilder(256);
+                        GetClassName(under, sb, sb.Capacity);
+                        string cls = sb.ToString();
+                        // 点在菜单窗口本身（类名含 ToolStrip，含边框/弹出的子菜单）也算菜单内。
+                        inside = under != IntPtr.Zero &&
+                                 cls.IndexOf("ToolStrip", StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+
+                    // 菜单范围内一律放行，交给原生 按下→抬起→Click，绝不在 Click 前关菜单；
+                    // 点到菜单矩形外的任何其他窗口、桌面、任务栏或悬浮球，才立即关闭。
+                    if (!inside)
                     {
                         menu.BeginInvoke(new Action(() =>
                         {
