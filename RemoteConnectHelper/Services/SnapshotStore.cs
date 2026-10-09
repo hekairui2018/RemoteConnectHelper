@@ -125,30 +125,29 @@ public static class SnapshotStore
         catch { return new List<string>(); }
     }
 
-    /// <summary>把当天日志(.log)与当天异常截图打成一个 zip 放桌面；当天没有截图返回 null（只发 .log 即可）。</summary>
-    public static string? ExportTodayBundle(string logSourcePath, string dateStr)
+    /// <summary>把当天日志(.log)与当天异常截图(若有)打成一个 zip 到指定 zipPath；始终包含当天日志，
+    /// 当天有异常截图时一并放进 shots/。成功返回 zipPath，失败返回 null。</summary>
+    public static string? ExportZip(string logSourcePath, string dateStr, string zipPath)
     {
-        var shots = TodayFiles();
-        if (shots.Count == 0) return null;
         try
         {
-            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            Directory.CreateDirectory(desktop);
-            string zip = Path.Combine(desktop, $"远程连接助手日志_{dateStr}.zip");
-            if (File.Exists(zip)) File.Delete(zip);
-            using (var fs = File.Open(zip, FileMode.Create, FileAccess.Write))
+            string? dir = Path.GetDirectoryName(zipPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            if (File.Exists(zipPath)) File.Delete(zipPath);
+            var shots = TodayFiles();
+            using (var fs = File.Open(zipPath, FileMode.Create, FileAccess.Write))
             using (var archive = new ZipArchive(fs, ZipArchiveMode.Create))
             {
                 archive.CreateEntryFromFile(logSourcePath, $"远程连接助手日志_{dateStr}.log");
                 foreach (var s in shots)
                     archive.CreateEntryFromFile(s, "shots/" + Path.GetFileName(s));
             }
-            Logger.Info($"当天异常截图 {shots.Count} 张已随日志打包：{zip}");
-            return zip;
+            Logger.Info($"当天日志包已导出：{zipPath}（含异常截图 {shots.Count} 张）");
+            return zipPath;
         }
         catch (Exception ex)
         {
-            Logger.Warn("打包日志+截图失败：" + ex.Message);
+            Logger.Warn("打包当天日志zip失败：" + ex.Message);
             return null;
         }
     }

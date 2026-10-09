@@ -316,7 +316,8 @@ public partial class App : System.Windows.Application
         w.Show();
     }
 
-    /// <summary>右键菜单“导出当天日志”：复制当天日志到桌面；桌面不可写改弹“另存为”；当天无日志则提示。</summary>
+    /// <summary>右键菜单“导出当天日志”：始终只在桌面产出一个 zip（内含当天 .log；当天有异常截图再带 shots/）；
+    /// 桌面不可写改弹“另存为”；当天无日志则提示。不再额外往桌面放裸 .log，保证桌面只有一个文件。</summary>
     private void ExportTodayLog()
     {
         try
@@ -328,39 +329,44 @@ public partial class App : System.Windows.Application
                 return;
             }
 
-            string? dst = null;
-            try { dst = Logger.ExportTodayToDesktop(); }
-            catch (Exception ex) { Logger.Warn("导出日志到桌面失败，改弹另存为：" + ex.Message); }
+            string dateStr = DateTime.Now.ToString("yyyyMMdd");
+            int shotCount = SnapshotStore.TodayFiles().Count;
 
-            if (string.IsNullOrEmpty(dst))
+            string? zip = null;
+            try
+            {
+                string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                zip = SnapshotStore.ExportZip(Logger.TodayLogPath, dateStr,
+                    Path.Combine(desktop, $"远程连接助手日志_{dateStr}.zip"));
+            }
+            catch (Exception ex) { Logger.Warn("导出日志zip到桌面失败，改弹另存为：" + ex.Message); }
+
+            if (string.IsNullOrEmpty(zip))
             {
                 var dlg = new Microsoft.Win32.SaveFileDialog
                 {
-                    FileName = $"远程连接助手日志_{DateTime.Now:yyyyMMdd}.log",
-                    Filter = "日志文件 (*.log)|*.log|文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*"
+                    FileName = $"远程连接助手日志_{dateStr}.zip",
+                    Filter = "压缩包 (*.zip)|*.zip|所有文件 (*.*)|*.*"
                 };
                 if (dlg.ShowDialog() == true)
                 {
-                    File.Copy(Logger.TodayLogPath, dlg.FileName, true);
-                    dst = dlg.FileName;
+                    try { zip = SnapshotStore.ExportZip(Logger.TodayLogPath, dateStr, dlg.FileName); }
+                    catch (Exception ex) { Logger.Warn("另存日志zip失败：" + ex.Message); }
                 }
             }
 
-            if (!string.IsNullOrEmpty(dst))
+            if (!string.IsNullOrEmpty(zip))
             {
-                Logger.Info($"导出当天日志到：{dst}");
-                // 当天若有“不成功”留存的截图，把日志+截图打成一个 zip 一起导出，便于发回复盘判错现场
-                string? zip = null;
-                try { zip = SnapshotStore.ExportTodayBundle(Logger.TodayLogPath, DateTime.Now.ToString("yyyyMMdd")); }
-                catch (Exception zex) { Logger.Warn("打包日志截图失败：" + zex.Message); }
-                string focus = zip ?? dst;
-                string tip = zip != null
-                    ? "当天日志和异常截图已打包导出到：\n" + zip + "\n\n（压缩包内含日志 .log 和 shots 截图）\n点“是”打开所在文件夹。"
-                    : "当天日志已导出到：\n" + dst + "\n\n点“是”打开所在文件夹。";
+                Logger.Info($"导出当天日志包到：{zip}（异常截图 {shotCount} 张）");
+                string tip = "当天日志已导出到：\n" + zip +
+                    (shotCount > 0
+                        ? $"\n\n压缩包内含当天日志和 {shotCount} 张异常截图（shots 文件夹）。"
+                        : "\n\n压缩包内含当天日志。") +
+                    "\n\n点“是”打开所在文件夹。";
                 var r = System.Windows.MessageBox.Show(tip, AppName, MessageBoxButton.YesNo, MessageBoxImage.Information);
                 if (r == MessageBoxResult.Yes)
                 {
-                    try { System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{focus}\""); } catch { }
+                    try { System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{zip}\""); } catch { }
                 }
             }
         }
@@ -960,7 +966,10 @@ public partial class App : System.Windows.Application
             var shots = SnapshotStore.TodayFiles();
             Console.WriteLine($"TodayFiles={shots.Count}");
             foreach (var f in shots) Console.WriteLine("  shot: " + new FileInfo(f).Name + $" ({new FileInfo(f).Length / 1024}KB)");
-            string? zip = SnapshotStore.ExportTodayBundle(Logger.TodayLogPath, DateTime.Now.ToString("yyyyMMdd"));
+            string d2 = DateTime.Now.ToString("yyyyMMdd");
+            string zpath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                $"远程连接助手日志_{d2}.zip");
+            string? zip = SnapshotStore.ExportZip(Logger.TodayLogPath, d2, zpath);
             Console.WriteLine($"Bundle zip -> {zip ?? "(null)"}");
         }
         catch (Exception ex)
