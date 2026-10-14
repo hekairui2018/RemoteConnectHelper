@@ -55,7 +55,7 @@ public static class CodeExtractor
 
     // ToDesk 用“密码/安全代码”体系（安全密码/临时密码/安全代码）；它不用“验证码”一词，不收，避免抢向日葵的码。
     public static readonly string[] ToDeskPwdHints =
-        { "安全密码", "临时密码", "安全代码", "安全码", "密码" };
+        { "安全密码", "临时密码", "临时码", "安全代码", "安全码", "密码" };
 
     // 聊天截图里常见的"设备码/账号"写法（界面输入区标签之外的补充，用于放宽碎短段拼接）
     public static readonly string[] ChatCodeLabelHints =
@@ -349,6 +349,10 @@ public static class CodeExtractor
     /// 只收图上真识别到的合规短串，不做机械的字符互换。</summary>
     public static string FindPassword(OcrDoc doc, string[] pwdHints, IEnumerable<string> deviceCodes,
                                       out List<string> alternatives)
+        => FindPassword(doc, pwdHints, deviceCodes, out alternatives, out _);
+
+    public static string FindPassword(OcrDoc doc, string[] pwdHints, IEnumerable<string> deviceCodes,
+                                      out List<string> alternatives, out bool needsReview)
     {
         var devSet = new HashSet<string>(deviceCodes);
         // 候选池：(密码串, 可信分)。标签聚簇最可信，弱锚点 +5000、残差 +10000 靠后，只影响候选排序。
@@ -439,12 +443,16 @@ public static class CodeExtractor
         string? weak = FindPasswordByWeakAnchor(lines, devSet, pool);
         string? residual = FindPasswordByResidual(doc, devSet, pool);
         string main = bestAlpha ?? bestNum ?? weak ?? residual ?? "";
+        // 记录弱线索、隐藏值等情况，供预览和纠错提示使用；该标记本身不再阻止直连。
+        needsReview = !string.IsNullOrEmpty(main)
+            ? bestAlpha == null && bestNum == null
+            : labels.Any(l => !l.Line.Text.Contains("可为空") && !l.Line.Text.Contains("免密"));
 
         // 其它候选：按可信分排序，排除设备码/品牌名/主串，最多 3 个
         alternatives = pool
             .OrderBy(p => p.Score)
             .Select(p => p.Raw)
-            .Where(r => r.Length >= 4 && r != main && !devSet.Contains(r)
+            .Where(r => r.Length >= 4 && r != main && !MatchesDeviceCode(r, devSet)
                         // 设备码被 OCR 读成形似字母（IOO054911…）时会从密码残差漏进来，形似还原回 9~10 位数字且正是某设备码则剔除
                         && !(TryDigitLike(r, out var asDigits) && asDigits.Length is >= 9 and <= 10 && devSet.Contains(asDigits))
                         && !PwdBrandBlock.Any(b => r.ToLowerInvariant().Contains(b)))
@@ -564,7 +572,7 @@ public static class CodeExtractor
         // 9~10 位且几乎全数字（字母≤1）、或字母占比不足 1/4 的，形态就是设备码，弱锚点不采。
         if (raw.Length is >= 9 and <= 10 && letters <= 1) return;
         if (letters * 4 < raw.Length) return;
-        if (devSet.Contains(raw)) return;
+        if (MatchesDeviceCode(raw, devSet)) return;
         string low = raw.ToLowerInvariant();
         if (PwdBrandBlock.Any(b => low.Contains(b))) return;
         pool.Add((raw, 5000 + score));   // 弱锚点候选排在标签聚簇之后
@@ -602,12 +610,15 @@ public static class CodeExtractor
             bool hasChinese = line.Text.Any(c => c >= 0x4E00 && c <= 0x9FFF);
             bool isTime = Regex.IsMatch(line.Text, @"\d{1,2}[:：]\d{2}");
 
-            foreach (Match tm in Regex.Matches(line.Text, @"[A-Za-z0-9]+"))
+            // 本机码与密码常在同一行的两列。整行去空白后会变成“111222333Abc456”，
+            // 导致密码被当作长设备码一起排除；按真实水平间隔分簇后分别识别。
+            foreach (var cluster in ClusterPasswordWords(line.Words))
+            foreach (Match tm in Regex.Matches(cluster.Text, @"[A-Za-z0-9]+"))
             {
                 string norm = NormalizePwd(tm.Value);
                 if (norm.Length is < 4 or > 16) continue;
                 if (Regex.IsMatch(norm, @"\d{9,}")) continue;           // 长数字＝设备码
-                if (devSet.Contains(norm)) continue;
+                if (MatchesDeviceCode(norm, devSet)) continue;
                 string low = norm.ToLowerInvariant();
                 if (PwdBrandBlock.Any(b => low.Contains(b))) continue;  // 品牌名不当密码
 
@@ -658,6 +669,10 @@ public static class CodeExtractor
         return Regex.Replace(text, @"[^A-Za-z0-9]", "");
     }
 
+    private static bool MatchesDeviceCode(string text, HashSet<string> deviceCodes)
+        => deviceCodes.Contains(text) || (text.Length is 9 or 10
+            && TryDigitLike(text, out var digits) && deviceCodes.Contains(digits));
+
     private static void Consider(OcrWord w, HashSet<string> devSet, double score,
                                  ref string? bestAlpha, ref double bestAlphaScore,
                                  ref string? bestNum, ref double bestNumScore,
@@ -666,7 +681,7 @@ public static class CodeExtractor
         string raw = NormalizePwd(w.Text);
         if (raw.Length < 4 || raw.Length > 20) return;
         if (!Regex.IsMatch(raw, @"^[A-Za-z0-9]+$")) return;
-        if (devSet.Contains(raw)) return;
+        if (MatchesDeviceCode(raw, devSet)) return;
 
         bool alpha = Regex.IsMatch(raw, "[A-Za-z]");
         if (alpha)

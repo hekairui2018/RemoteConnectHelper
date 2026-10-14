@@ -40,6 +40,12 @@ public sealed class RecognizedResult
     public RemoteAppKind Kind { get; set; } = RemoteAppKind.Unknown;
     public string DeviceCode { get; set; } = "";
     public string Password { get; set; } = "";
+    /// <summary>密码只从弱线索读到、或标签旁没有可读值，供预览与纠错提示使用，不单独阻止直连。</summary>
+    public bool PasswordNeedsReview { get; set; }
+    /// <summary>识别采用的旋转角度，供卡片按同一方向展示截图。</summary>
+    public int ImageRotation { get; set; }
+    /// <summary>只有增强副本才读到的结果，用于日志与预览，不单独阻止直连。</summary>
+    public bool ImageEnhanced { get; set; }
     /// <summary>是否识别到密码（false = 免密连接）</summary>
     public bool HasPassword => !string.IsNullOrEmpty(Password);
 
@@ -58,6 +64,11 @@ public sealed class RecognizedResult
 
     /// <summary>品牌判定的人话依据（命中了哪个品牌名/术语，或“无强信号默认向日葵”），仅用于日志复盘。</summary>
     public string BrandReason { get; set; } = "";
+
+    /// <summary>目标设备码在截图中的中心坐标（像素，-1 表示无）。用于同屏冲突时按“目标码所在区域”的
+    /// 品牌证据定默认软件（双窗口截图：左边向日葵窗口、右边 ToDesk 窗口，码在哪个窗口就按哪个窗口判）。</summary>
+    public double TargetCodeX { get; set; } = -1;
+    public double TargetCodeY { get; set; } = -1;
 
     public string KindName => Kind switch
     {

@@ -12,3 +12,11 @@ selftest_out/
 /*.png
 /*.ps1
 /*.txt
+
+# 用户提供的真实远程截图及对应凭据仅在本机回归，不提交到公开仓库。
+/testcases/T16_sun_dark_127.jpg
+/testcases/T17_sun_dark_rot_581.jpg
+/testcases/T18_dual_sun_td.png
+/testcases/T19_sun_maskpwd_491.png
+/testcases/T20_report_sun_603.png
+/testcases/private-fixtures.json

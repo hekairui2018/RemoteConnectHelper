@@ -125,6 +125,26 @@ public static class OcrService
         return rtb;
     }
 
+    /// <summary>拍屏文字的高对比兜底。仅改识别副本，尺寸和坐标与原图一致。</summary>
+    public static BitmapSource EnhanceForOcr(BitmapSource source)
+    {
+        var bgra = new System.Windows.Media.Imaging.FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+        int stride = checked(source.PixelWidth * 4);
+        var pixels = new byte[checked(stride * source.PixelHeight)];
+        bgra.CopyPixels(pixels, stride, 0);
+        for (int p = 0; p < pixels.Length; p += 4)
+        {
+            int gray = (pixels[p] * 114 + pixels[p + 1] * 587 + pixels[p + 2] * 299) / 1000;
+            byte value = gray >= 200 ? (byte)255 : (byte)0;
+            pixels[p] = pixels[p + 1] = pixels[p + 2] = value;
+            pixels[p + 3] = 255;
+        }
+        var result = BitmapSource.Create(source.PixelWidth, source.PixelHeight, 96, 96,
+            PixelFormats.Bgra32, null, pixels, stride);
+        result.Freeze();
+        return result;
+    }
+
     public static async Task<OcrDoc?> RecognizeAsync(BitmapSource bmp)
     {
         var engine = _engine.Value;

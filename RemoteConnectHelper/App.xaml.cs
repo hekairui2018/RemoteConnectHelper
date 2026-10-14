@@ -21,6 +21,8 @@ public partial class App : System.Windows.Application
     private WinForms.NotifyIcon? _tray;
     private AppConfig _config = new();
     private bool _running;
+    // 当前打开的确认卡（手填/软件选择/自动直连共用）。卡开着时点悬浮球 = 关旧卡、重新识别最新截图。
+    private ConfirmCardWindow? _currentCard;
     private readonly RecognizerEngine _engine = new();
 
     // 第二个实例（双击桌面图标/快捷方式）通过这个命名事件通知已在运行的主实例"识别剪贴板"
@@ -82,7 +84,7 @@ public partial class App : System.Windows.Application
         }
 
         // 界面真机验证：--hud <图片路径>，把图放进剪贴板后走与热键完全相同的流水线
-        // （弹状态小条、可取消/重试），常驻托盘。仅用于真机验证界面，不写 once_result。
+        // （弹确认气泡卡、可停止/重试），常驻托盘。仅用于真机验证界面，不写 once_result。
         if (e.Args.Length >= 2 && e.Args[0] == "--hud")
         {
             base.OnStartup(e);
@@ -150,6 +152,10 @@ public partial class App : System.Windows.Application
         miExport.Click += (_, _) => Dispatcher.BeginInvoke(new Action(ExportTodayLog));
         menu.Items.Add(miExport);
 
+        var miOpenLogDir = new WinForms.ToolStripMenuItem("打开日志文件夹");
+        miOpenLogDir.Click += (_, _) => Dispatcher.BeginInvoke(new Action(OpenLogFolder));
+        menu.Items.Add(miOpenLogDir);
+
         menu.Items.Add(new WinForms.ToolStripSeparator());
 
         var miAutoClip = new WinForms.ToolStripMenuItem("截图后自动连接（认出远程码即连）")
@@ -187,7 +193,9 @@ public partial class App : System.Windows.Application
             System.Windows.MessageBox.Show(
                 $"远程连接助手 V{BuildInfo.Version}\n构建时间：{BuildInfo.BuildTime}\n\n" +
                 "截图客户远程码后点北斗悬浮球（或按 Ctrl+Alt+R），\n自动识别向日葵/ToDesk 并连接；\n认不准软件时点卡片上的软件按钮，密码留空即免密直连。\n\n" +
-                "右键悬浮球/托盘可「导出当天日志」排查问题。",
+                "右键悬浮球/托盘可「导出当天日志」（打包发回复盘）\n或「打开日志文件夹」（现场直接看 logs 日志、shots 截图）。\n\n" +
+                "日志/截图目录：" + Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RemoteConnectHelper"),
                 AppName, MessageBoxButton.OK, MessageBoxImage.Information);
         menu.Items.Add(miAbout);
 
@@ -316,6 +324,27 @@ public partial class App : System.Windows.Application
         w.Show();
     }
 
+    /// <summary>右键菜单“打开日志文件夹”：在资源管理器打开 %AppData%\RemoteConnectHelper，
+    /// 里面 logs\ 为按天日志、shots\ 为不成功时留存的截图、config.json 为设置。现场排查不用再翻隐藏目录。</summary>
+    private void OpenLogFolder()
+    {
+        try
+        {
+            string root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RemoteConnectHelper");
+            Directory.CreateDirectory(root);
+            Logger.Info("打开日志/截图文件夹：" + root);
+            System.Diagnostics.Process.Start("explorer.exe", "\"" + root + "\"");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("打开日志文件夹失败", ex);
+            System.Windows.MessageBox.Show("打开日志文件夹失败：" + ex.Message, AppName,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     /// <summary>右键菜单“导出当天日志”：始终只在桌面产出一个 zip（内含当天 .log；当天有异常截图再带 shots/）；
     /// 桌面不可写改弹“另存为”；当天无日志则提示。不再额外往桌面放裸 .log，保证桌面只有一个文件。</summary>
     private void ExportTodayLog()
@@ -395,7 +424,7 @@ public partial class App : System.Windows.Application
         _ball.OnRecognize = () =>
         {
             Logger.Info("悬浮球点击，触发识别");
-            Dispatcher.BeginInvoke(new Action(RunPipelineSafe));
+            Dispatcher.BeginInvoke(new Action(TriggerRecognizeOrReplaceCard));
         };
         _ball.OnRightClick = ShowBallMenu;
         _ball.PositionChanged += (l, t) =>
@@ -450,7 +479,7 @@ public partial class App : System.Windows.Application
 
             // 记住最近一张远程码（品牌没把握也缓存，点击时按品牌置信分流：铁证直连、拿不准弹气泡人工核对软件）
             _pre = new PreRecognition { Hash = hash, Shot = shot, Result = r };
-            bool canAuto = r.Kind != RemoteAppKind.Unknown && string.IsNullOrEmpty(r.Error) && r.BrandConfident;
+            bool canAuto = CanAutoConnect(r);
             Logger.Info($"剪贴板截图已预识别并记住：{r.KindName} {code} " +
                         $"密码={(r.HasPassword ? r.Password : "<免密>")} " +
                         $"原图={doc.ImgWidth:F0}x{doc.ImgHeight:F0} 放大={doc.ScaleApplied:0.##} " +
@@ -480,6 +509,11 @@ public partial class App : System.Windows.Application
         bool upright = OcrOrientation.HasUprightSignal(doc);
         // 快路径：认出码且画面文字正立可读（命中品牌/界面词）→ 直接采用。正向截图只做这一次 OCR，零额外开销。
         if (!string.IsNullOrWhiteSpace(result.DeviceCode) && upright) return (doc, result);
+        if (string.IsNullOrWhiteSpace(result.DeviceCode) && upright)
+        {
+            var enhanced = await RecognizeEnhancedAsync(shot).ConfigureAwait(false);
+            if (enhanced.result != null) return enhanced;
+        }
 
         // 正向无码，或有码但文字不像正立（倒置/侧置时数字会被硬凑成形似的 9 位误码，如 353717031→130111353）：
         // 逐方向找“认出码 + 文字正立”，首个满足即采用。
@@ -495,7 +529,17 @@ public partial class App : System.Windows.Application
             if (!string.IsNullOrWhiteSpace(r2.DeviceCode) && OcrOrientation.HasUprightSignal(d2))
             {
                 Logger.Info($"OCR 正向未获“正立设备码”（正向界面词={upright}），旋转 {ang}° 后命中：{r2.KindName} 码={r2.DeviceCode}");
+                r2.ImageRotation = ang;
                 return (d2, r2);
+            }
+            if (string.IsNullOrWhiteSpace(r2.DeviceCode) && OcrOrientation.HasUprightSignal(d2))
+            {
+                var enhanced = await RecognizeEnhancedAsync(rotated).ConfigureAwait(false);
+                if (enhanced.result != null)
+                {
+                    enhanced.result.ImageRotation = ang;
+                    return enhanced;
+                }
             }
         }
         // 各方向都没有“码+正立词”：多为纯数字/纯字母聊天截图（本就无中文锚词），尊重原图正向结果；
@@ -505,23 +549,49 @@ public partial class App : System.Windows.Application
         return (doc, result);
     }
 
-    /// <summary>16x16 灰度均值哈希，用于"同一张截图不重复预识别"以及点击时核对剪贴板是否仍是那张图。</summary>
+    private async Task<(OcrDoc? doc, RecognizedResult? result)> RecognizeEnhancedAsync(BitmapSource source)
+    {
+        try
+        {
+            var image = OcrService.EnhanceForOcr(source);
+            var doc = await Task.Run(() => OcrService.RecognizeAsync(image)).ConfigureAwait(false);
+            if (doc == null) return (null, null);
+            var result = _engine.Run(doc);
+            if (string.IsNullOrWhiteSpace(result.DeviceCode)) return (null, null);
+            result.ImageEnhanced = true;
+            Logger.Info($"高对比副本识别到设备码 {result.DeviceCode}，按软件置信及设备码有效性决定直连");
+            return (doc, result);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("高对比识别兜底失败：" + ex.Message);
+            return (null, null);
+        }
+    }
+
+    /// <summary>按尺寸和完整像素计算 SHA256。只有同一张图才能复用识别结果，不能用缩略图相似度判定设备码。</summary>
     private static string QuickHash(BitmapSource bmp)
     {
         try
         {
             if (!bmp.IsFrozen && bmp.CanFreeze) bmp.Freeze();
-            var scaled = new TransformedBitmap(bmp,
-                new System.Windows.Media.ScaleTransform(16.0 / bmp.PixelWidth, 16.0 / bmp.PixelHeight));
-            var gray = new FormatConvertedBitmap(scaled, System.Windows.Media.PixelFormats.Gray8, null, 0);
-            var px = new byte[256];
-            gray.CopyPixels(px, 16, 0);
-            long sum = 0;
-            foreach (var p in px) sum += p;
-            byte avg = (byte)(sum / px.Length);
-            var sb = new System.Text.StringBuilder(256);
-            foreach (var p in px) sb.Append(p >= avg ? '1' : '0');
-            return sb.ToString();
+            var pixels = bmp.Format == System.Windows.Media.PixelFormats.Bgra32
+                ? bmp
+                : new FormatConvertedBitmap(bmp, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+            using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+                System.Security.Cryptography.HashAlgorithmName.SHA256);
+            hash.AppendData(BitConverter.GetBytes(pixels.PixelWidth));
+            hash.AppendData(BitConverter.GetBytes(pixels.PixelHeight));
+            int stride = checked(pixels.PixelWidth * 4);
+            const int rowsPerBlock = 64;
+            var buffer = new byte[checked(stride * Math.Min(rowsPerBlock, pixels.PixelHeight))];
+            for (int y = 0; y < pixels.PixelHeight; y += rowsPerBlock)
+            {
+                int rows = Math.Min(rowsPerBlock, pixels.PixelHeight - y);
+                pixels.CopyPixels(new Int32Rect(0, y, pixels.PixelWidth, rows), buffer, stride, 0);
+                hash.AppendData(buffer, 0, stride * rows);
+            }
+            return Convert.ToHexString(hash.GetHashAndReset());
         }
         catch
         {
@@ -568,6 +638,20 @@ public partial class App : System.Windows.Application
             }
         }
         catch { /* 气泡不影响主流程，忽略 */ }
+    }
+
+    /// <summary>点悬浮球/热键入口：确认卡还开着时，先关旧卡再重新识别最新截图（关完等旧流程释放锁，再走正常流水线）。</summary>
+    private async void TriggerRecognizeOrReplaceCard()
+    {
+        if (_currentCard is { IsVisible: true })
+        {
+            Logger.Info("确认卡开着→关闭旧卡，重新识别最新截图");
+            var card = _currentCard;
+            _currentCard = null;
+            card.ForceClose("重新识别");
+            while (_running) await Task.Delay(50);
+        }
+        RunPipelineSafe();
     }
 
     private async void RunPipelineSafe()
@@ -652,204 +736,154 @@ public partial class App : System.Windows.Application
                     $"密码={(result.HasPassword ? result.Password : "<免密>")} " +
                     $"候选=[{string.Join(",", result.CandidateCodes)}] 依据=[{result.BrandReason}] 错误={result.Error ?? "无"}");
 
-        // 识别成功、即将弹状态小条/手动卡片：先收掉托盘启动气泡，避免两个提示并排让客服困惑
+        // 识别成功、即将弹确认气泡卡：先收掉托盘启动气泡，避免两个提示并排让客服困惑
         DismissBalloon();
 
-        // 4. 速度优先：品牌有铁证（品牌名/识别码·验证码 vs 设备代码·安全密码）立即连接 + 非阻塞状态小条；
-        //    品牌没把握（只剩两家共有中性词、靠码长默认）时，码虽认到也弹气泡让客服瞄一眼软件，防连错。
+        // 4. 唯一结果窗口＝确认气泡卡：品牌铁证 → 弹卡即自动发起连接；没把握 → 弹卡等客服选软件/手填后点「连接」。
+        //    成功卡片自动消失，失败/要密码卡片停留可改可重试（绝不替用户赌品牌）。
         string autoCode = (result.DeviceCode ?? "").Trim().Replace(" ", "");
-        bool canAuto = result.Kind != RemoteAppKind.Unknown
-                       && string.IsNullOrEmpty(result.Error)
-                       && result.BrandConfident
-                       && autoCode.Length >= 9;
+        bool canAuto = CanAutoConnect(result);
         if (!canAuto)
         {
             string why = !string.IsNullOrEmpty(result.Error) ? "未认出设备码→手填卡"
                 : !result.BrandConfident ? "软件类型无铁证→软件选择卡（不替用户赌）"
-                : "设备码不足9位→手填卡";
-            Logger.Info($"分流→确认卡（{why}）");
+                : "设备码无效→手填卡";
+            Logger.Info($"分流→确认卡（{why}，等人工点连接）");
             // 没能自动直连（未认出码/软件无铁证要人工选/码不足）：不成功，留存原图
             SnapshotStore.Save(!string.IsNullOrEmpty(result.Error) || autoCode.Length < 9 ? "nocode" : "pickbrand",
                                result.DeviceCode, shot);
-            var manual = new ConfirmCardWindow(result, shot, MakeCardConfirm(result, shot), _ball?.BoundsRect);
+            var manual = new ConfirmCardWindow(result, shot, MakeCardConnect(shot), _ball?.BoundsRect);
+            _currentCard = manual;
             manual.Show();
             await manual.ClosedTask;
+            if (_currentCard == manual) _currentCard = null;
             return;
         }
-        Logger.Info("分流→自动直连（品牌铁证 + 设备码≥9位）");
-        await RunConnectWithHudAsync(result, shot);
+        Logger.Info("分流→自动直连（软件已确定 + 设备码有效）：弹卡并自动发起连接");
+        var autoCard = new ConfirmCardWindow(result, shot, MakeCardConnect(shot), _ball?.BoundsRect,
+                                             autoConnect: true);
+        _currentCard = autoCard;
+        autoCard.Show();
+        await autoCard.ClosedTask;
+        if (_currentCard == autoCard) _currentCard = null;
     }
 
-    /// <summary>带状态小条 + 取消上下文（Esc/取消按钮/35s 看门狗/点连接后断开兜底）的一次连接；
-    /// 品牌铁证自动直连与确认卡点软件按钮后统一走这里，保证两条路径都能随时停止。</summary>
-    private async Task RunConnectWithHudAsync(RecognizedResult r, BitmapSource? shot)
+    /// <summary>软件确定且设备码有效即直连；增强识别、密码待核对本身不再要求先点确认。</summary>
+    private static bool CanAutoConnect(RecognizedResult result)
     {
-        var hud = new StatusHudWindow();
-        ConnectionContext? ctx = null;
-        hud.OnCancel = () =>
+        if (!result.BrandConfident || !string.IsNullOrEmpty(result.Error)) return false;
+        string code = (result.DeviceCode ?? "").Trim().Replace(" ", "");
+        bool validLength = result.Kind switch
         {
-            Logger.Info("用户在状态小条点取消/Esc");
-            ctx?.CancelByUser();
+            RemoteAppKind.Sunlogin => code.Length is 9 or 10,
+            RemoteAppKind.ToDesk => code.Length == 9,
+            _ => false
         };
-        hud.OnRetry = () => { Logger.Info("用户在状态小条点重试"); _ = RunAutoAsync(hud, r); };
-        hud.OnManual = () =>
-        {
-            Logger.Info("用户选手动改/输密码");
-            Dispatcher.Invoke(() => PopManualCard(hud, r, shot, "在卡片上核对设备码/密码后点软件按钮连接"));
-        };
-        hud.Show();
-        await RunAutoAsync(hud, r);
-
-        // 一次自动连接（重试也走这里，每次换新的取消上下文）
-        async Task RunAutoAsync(StatusHudWindow h, RecognizedResult r)
-        {
-            var c = new ConnectionContext(r.Kind);
-            ctx = c;
-            h.Bind(c);
-            h.SetConnecting(r.KindName, r.DeviceCode, r.HasPassword ? r.Password : null);
-            try
-            {
-                IRemoteConnector connector = r.Kind == RemoteAppKind.Sunlogin
-                    ? new SunloginConnector()
-                    : new ToDeskConnector();
-                var t = connector.ConnectAsync(r.DeviceCode, r.HasPassword ? r.Password : "", c);
-                _ = t.ContinueWith(x =>
-                    {
-                        if (x.IsFaulted && x.Exception?.InnerException is OperationCanceledException)
-                            Logger.Info("连接已被用户取消");
-                        else if (x.IsFaulted)
-                            Logger.Error("后台连接任务异常", x.Exception?.InnerException);
-                    },
-                    TaskScheduler.Default);
-
-                ConnectResult res;
-                if (await Task.WhenAny(t, Task.Delay(35000)) == t)
-                {
-                    try { res = await t; }
-                    catch (OperationCanceledException)
-                    {
-                        res = c.ConnectClicked
-                            ? ConnectResult.Cancel("已尝试断开，请确认远程会话已关闭")
-                            : ConnectResult.Cancel("已取消，未发起连接");
-                    }
-                }
-                else
-                {
-                    c.Cancel();
-                    res = ConnectResult.Fail("连接超时（远程软件无响应），已取消自动连接，请手动连接");
-                }
-
-                // 终态归一放到 UI 线程执行，与"取消按钮点击（BtnCancel_Click 也在 UI 线程）"串行，
-                // 消除点击事件尚在 Dispatcher 队列、后台线程已抢先按 Fail 定终态的竞态。
-                ConnectResult final = res;
-                bool disconnecting = false;
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    if (c.UserCancelled &&
-                        final.Status != ConnectStatus.Launched && final.Status != ConnectStatus.NeedPassword)
-                        final = c.ConnectClicked
-                            ? ConnectResult.Cancel("已尝试断开，请确认远程会话已关闭")
-                            : ConnectResult.Cancel("已取消，未发起连接");
-                    disconnecting = c.ConnectClicked && final.Status == ConnectStatus.Cancelled;
-                });
-
-                if (disconnecting)
-                {
-                    // 已点下连接才取消 = 断开兜底：在 STA 线程关会话窗/发 Esc
-                    try { await StaRunner.Run(() => { ScreenOps.CloseSession(c); return true; }); }
-                    catch (Exception ex) { Logger.Error("断开会话失败", ex); }
-                }
-
-                if (final.Status == ConnectStatus.Launched)
-                {
-                    // 明确进入会话(消息含“会话”)算成功不留图；仅“已发起”但没探到会话窗=未确认，留存复盘
-                    if (final.Message?.Contains("已发起") == true)
-                        SnapshotStore.Save("unconfirmed", r.DeviceCode, shot);
-                    // 成功由状态小条绿色态表达并在 1.5s 后自动关，不再弹气泡，避免两个提示并排
-                    h.SetLaunched(final.Message ?? "已发起连接", r.DeviceCode);
-                }
-                else if (final.Status == ConnectStatus.Cancelled)
-                {
-                    h.SetCancelled(final.Message, r.DeviceCode, disconnecting);
-                }
-                else if (final.Status == ConnectStatus.NeedPassword || IsPwdIssue(final.Message))
-                {
-                    // 需要密码 / 密码没通过：不成功，留存原图；直接自动弹出预填卡片（码+密码已填好，光标在密码框），
-                    // 客服核对改完点连接即可，不必再去状态小条点“手动改/输密码”
-                    SnapshotStore.Save("needpwd", r.DeviceCode, shot);
-                    Dispatcher.Invoke(() => PopManualCard(h, r, shot, final.Message));
-                }
-                else
-                {
-                    SnapshotStore.Save("failed", r.DeviceCode, shot); // 红字失败/超时：不成功，留存原图
-                    h.SetFailed(final.Message, r.DeviceCode);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("自动连接异常", ex);
-                // 与取消点击同线程读取，避免竞态把用户取消误判成失败
-                bool uc = false, clicked = false;
-                Dispatcher.Invoke(() => { uc = c.UserCancelled; clicked = c.ConnectClicked; });
-                if (uc)
-                    h.SetCancelled(clicked ? "已尝试断开，请确认远程会话已关闭" : "已取消，未发起连接",
-                        r.DeviceCode, clicked);
-                else
-                {
-                    SnapshotStore.Save("failed", r.DeviceCode, shot); // 非用户取消的异常=不成功，留存
-                    h.SetFailed("出错了：" + ex.Message, r.DeviceCode);
-                }
-            }
-        }
+        return validLength && code.All(c => c is >= '0' and <= '9');
     }
 
-    /// <summary>密码没通过/需要密码时，自动在悬浮球旁弹出预填确认卡（码+密码可改），并收起状态小条。</summary>
-    private void PopManualCard(StatusHudWindow h, RecognizedResult r, BitmapSource? shot, string status)
+    /// <summary>确认卡「连接」回调：按选定软件/码/密码发起一次可取消连接（35s 看门狗、取消竞态、断开兜底、失败留存），
+    /// 终态返回卡片自行流转显示（成功自动关、失败/要密码停留可改可重试）。必须在 UI 线程调用。</summary>
+    private Func<RemoteAppKind, string, string, ConnectionContext, Task<ConnectResult>> MakeCardConnect(BitmapSource? shot)
     {
+        return (kind, code, pwd, ctx) => CardConnectAsync(kind, code, pwd, ctx, shot);
+    }
+
+    /// <summary>卡片发起的一次连接（重试也走这里，每次换新的取消上下文）。
+    /// 留存规则：取消不留存；成功仅“已发起未探到会话”留存；失败/要密码留存。</summary>
+    private async Task<ConnectResult> CardConnectAsync(RemoteAppKind kind, string code, string pwd,
+                                                       ConnectionContext c, BitmapSource? shot)
+    {
+        string kindName = kind == RemoteAppKind.Sunlogin ? "向日葵" : "ToDesk";
+        Logger.Info($"卡片连接发起：{kindName} 码={code} 密码={(string.IsNullOrEmpty(pwd) ? "<免密>" : pwd)}");
         try
         {
-            var card = new ConfirmCardWindow(r, shot, MakeCardConfirm(r, shot), _ball?.BoundsRect, status);
-            card.Show();
-            Logger.Info("需要密码/密码未通过，自动弹出预填确认卡供核对");
+            IRemoteConnector connector = kind == RemoteAppKind.Sunlogin
+                ? new SunloginConnector()
+                : new ToDeskConnector();
+            var t = connector.ConnectAsync(code, pwd, c);
+            _ = t.ContinueWith(x =>
+                {
+                    if (x.IsFaulted && x.Exception?.InnerException is OperationCanceledException)
+                        Logger.Info("连接已被用户取消");
+                    else if (x.IsFaulted)
+                        Logger.Error("后台连接任务异常", x.Exception?.InnerException);
+                },
+                TaskScheduler.Default);
+
+            ConnectResult res;
+            if (await Task.WhenAny(t, Task.Delay(35000)) == t)
+            {
+                try { res = await t; }
+                catch (OperationCanceledException)
+                {
+                    res = c.ConnectClicked
+                        ? ConnectResult.Cancel("已尝试断开，请确认远程会话已关闭")
+                        : ConnectResult.Cancel("已取消，未发起连接");
+                }
+            }
+            else
+            {
+                c.Cancel();
+                res = ConnectResult.Fail("连接超时（远程软件无响应），已取消自动连接，请手动连接");
+            }
+
+            // 终态归一放到 UI 线程执行，与"停止按钮点击（也在 UI 线程）"串行，消除点击事件尚在 Dispatcher 队列、
+            // 后台线程已抢先按 Fail 定终态的竞态。
+            ConnectResult final = res;
+            bool disconnecting = false;
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (c.UserCancelled)
+                    final = c.ConnectClicked
+                        ? ConnectResult.Cancel("已尝试断开，请确认远程会话已关闭")
+                        : ConnectResult.Cancel("已取消，未发起连接");
+                disconnecting = c.ConnectClicked && c.Token.IsCancellationRequested;
+            });
+
+            if (disconnecting)
+            {
+                // 已点下连接才取消 = 断开兜底：在 STA 线程关会话窗/发 Esc
+                try { await StaRunner.Run(() => { ScreenOps.CloseSession(c); return true; }); }
+                catch (Exception ex) { Logger.Error("断开会话失败", ex); }
+            }
+
+            // 留存：取消不留；成功仅“已发起”没探到会话窗=未确认留存；失败/要密码留存
+            if (final.Status == ConnectStatus.Launched)
+            {
+                if (final.Message?.Contains("已发起") == true)
+                    SnapshotStore.Save("unconfirmed", code, shot);
+            }
+            else if (final.Status == ConnectStatus.NeedPassword || IsPwdIssue(final.Message))
+            {
+                SnapshotStore.Save("needpwd", code, shot);
+            }
+            else if (final.Status == ConnectStatus.Failed)
+            {
+                SnapshotStore.Save("failed", code, shot);
+            }
+            return final;
         }
         catch (Exception ex)
         {
-            Logger.Error("自动弹确认卡失败，回退到状态小条", ex);
-            h.SetNeedPassword(status, r.DeviceCode);
-            return;
+            Logger.Error("自动连接异常", ex);
+            // 与停止点击同线程读取，避免竞态把用户取消误判成失败
+            bool uc = false, clicked = false;
+            Dispatcher.Invoke(() => { uc = c.UserCancelled; clicked = c.ConnectClicked; });
+            if (uc)
+                return c.ConnectClicked
+                    ? ConnectResult.Cancel("已尝试断开，请确认远程会话已关闭")
+                    : ConnectResult.Cancel("已取消，未发起连接");
+            SnapshotStore.Save("failed", code, shot);
+            return ConnectResult.Fail("出错了：" + ex.Message);
         }
-        h.Close();
     }
 
-    /// <summary>失败消息是否属于密码/验证码类（这类要弹预填卡，离线/超时等不弹）。</summary>
+    /// <summary>失败消息是否属于密码/验证码类（这类在卡片上停留并聚焦密码框；离线/超时等不聚焦）。</summary>
     private static bool IsPwdIssue(string? msg)
         => !string.IsNullOrEmpty(msg) &&
            (msg.Contains("密码") || msg.Contains("验证码") || msg.Contains("验证")
             || msg.Contains("解锁") || msg.Contains("凭据"));
-
-    /// <summary>确认卡点软件按钮后的回调：用人工选定的软件/设备码/密码组一个结果，关掉卡片后走可取消的状态小条连接。
-    /// 必须在 UI 线程调用（内部要 new/Show 状态小条）；连接在独立任务里继续，失败/要密码由状态小条重弹卡片。</summary>
-    private Func<RemoteAppKind, string, string, Task> MakeCardConfirm(RecognizedResult baseResult, BitmapSource? shot)
-    {
-        return (kind, code, pwd) =>
-        {
-            var r = new RecognizedResult
-            {
-                Kind = kind,
-                DeviceCode = code,
-                Password = pwd,
-                BrandConfident = true,
-                BrandReason = "确认卡人工选择",
-                CandidateCodes = baseResult.CandidateCodes,
-                CandidatePasswords = baseResult.CandidatePasswords
-            };
-            Logger.Info($"确认卡人工选定→启动可取消连接：{r.KindName} 码={code} 密码={(string.IsNullOrEmpty(pwd) ? "<免密>" : pwd)}");
-            RunConnectWithHudAsync(r, shot).ContinueWith(
-                t => Logger.Error("卡片确认后连接任务异常", t.Exception?.InnerException),
-                TaskContinuationOptions.OnlyOnFaulted);
-            return Task.CompletedTask;
-        };
-    }
 
     private static bool IsAutoStartEnabled()
     {
@@ -1012,7 +1046,7 @@ public partial class App : System.Windows.Application
 
             Console.WriteLine("---- 识别结果 ----");
             Console.WriteLine($"  软件   : {r.KindName}");
-            Console.WriteLine($"  品牌把握: {(r.BrandConfident ? "铁证(直连)" : "待核对(弹气泡)")}");
+            Console.WriteLine($"  品牌把握: {(CanAutoConnect(r) ? "已确定(直连)" : "待核对(弹气泡)")}");
             Console.WriteLine($"  设备码 : {r.DeviceCode}");
             Console.WriteLine($"  密码   : {(r.HasPassword ? r.Password : "<免密>")}");
             Console.WriteLine($"  候选码 : [{string.Join(", ", r.CandidateCodes)}]");

@@ -15,25 +15,34 @@ using RemoteConnectHelper.Recognition;
 namespace RemoteConnectHelper.UI;
 
 /// <summary>
-/// 从悬浮球旁冒出的“气泡”确认/手填卡：认不准软件、未识别、需补密码时弹出。
-/// 软件二选一用两个大按钮——点【向日葵】/【ToDesk】就直接连哪家（码/密码已预填，可改）；
-/// 回车＝连当前高亮（认不准时默认向日葵）；密码框常驻，留空即免密直连。
-/// 弹出后 8 秒无人理会自动关闭（=取消，不连接）；鼠标移入、聚焦、改码/改密码即保持不消失。
+/// 唯一的连接结果窗口（悬浮球旁气泡卡）：预填设备码/密码/软件（可改），底部【停止】【连接】两按钮。
+/// 流程：点悬浮球→弹卡；品牌铁证时自动发起连接，没把握时等客服选软件/手填后点「连接」。
+/// 成功 → 气泡显示“已发起连接”后自动消失；失败/需要密码 → 气泡停留，客服在卡上改码/改密码/换软件，
+/// 再点「连接」重试；点「停止」或按 Esc = 取消（连接前）/ 断开（已点下连接后）。
+/// 等待人工选择时 8 秒无人理会自动关闭；连接中与失败后不再自动关。
 /// </summary>
 public partial class ConfirmCardWindow : Window
 {
     private readonly RecognizedResult _result;
-    private readonly Func<RemoteAppKind, string, string, Task> _onConfirmed;
+    private readonly Func<RemoteAppKind, string, string, ConnectionContext, Task<ConnectResult>> _onConnect;
     private readonly DispatcherTimer _timer;
+    private readonly DispatcherTimer _autoClose;
     private readonly KeyHook _keyHook = new();
 
     private const double AutoCloseSeconds = 8;
     private DateTime _autoDeadline;
-    private bool _held;
-    private bool _busy;
+    private bool _held;          // 等待确认态已被交互保持
+    private bool _connecting;    // 连接中
+    private bool _failed;        // 失败/需要密码停留态（不再自动关）
     private bool _closed;
+    private bool _initializing = true;
+    private readonly Rect? _anchor;
+    private readonly double _baseHeight;
+    private Window? _sourceWindow;
     private readonly bool _focusPwd;
+    private readonly bool _autoConnect;
     private RemoteAppKind _selectedKind;
+    private ConnectionContext? _ctx;
     private readonly TaskCompletionSource<bool> _closedTcs = new();
 
     public Task<bool> ClosedTask => _closedTcs.Task;
@@ -44,15 +53,17 @@ public partial class ConfirmCardWindow : Window
     private static readonly Brush IdleFg = new SolidColorBrush(Color.FromRgb(0xC9, 0xC9, 0xD4));
 
     public ConfirmCardWindow(RecognizedResult result, BitmapSource? thumb,
-                             Func<RemoteAppKind, string, string, Task> onConfirmed,
-                             Rect? anchor = null, string? statusOverride = null)
+                             Func<RemoteAppKind, string, string, ConnectionContext, Task<ConnectResult>> onConnect,
+                             Rect? anchor = null, string? statusOverride = null, bool autoConnect = false)
     {
         InitializeComponent();
         _result = result;
-        _onConfirmed = onConfirmed;
+        _onConnect = onConnect;
         _focusPwd = !string.IsNullOrEmpty(statusOverride);
+        _autoConnect = autoConnect;
+        _anchor = anchor;
 
-        // 默认软件：明确 ToDesk 选 ToDesk，其余（向日葵/未知）默认向日葵，回车即可连
+        // 默认软件：明确 ToDesk 选 ToDesk，其余（向日葵/未知）默认向日葵
         _selectedKind = result.Kind == RemoteAppKind.ToDesk ? RemoteAppKind.ToDesk : RemoteAppKind.Sunlogin;
         SetSelected(_selectedKind);
 
@@ -63,22 +74,29 @@ public partial class ConfirmCardWindow : Window
         // 密码框常驻：识别到就预填，没有就留空（水印提示留空＝免密），客服随时可补
         PwdBox.Text = result.Password;
         UpdatePlaceholder();
-        // 密码有多种 OCR 读法时，同样在下方给候选小按钮（图上真实读法，不做机械字符互换）
         BuildPwdCandidates(result.CandidatePasswords, result.Password);
-        // 候选面板会增高：在按悬浮球定位前，按可见候选行补足窗口高度
         if (CandidatePanel.Visibility == Visibility.Visible) Height += 30;
         if (PwdCandidatePanel.Visibility == Visibility.Visible) Height += 30;
-        // 截图缩略图已移除：白底纯码缩略会被误看成第二个设备码输入框。thumb 参数保留不展示。
+        _baseHeight = Height;
+        PreparePreview(thumb);
 
         // 状态提示
         if (!string.IsNullOrEmpty(statusOverride))
             ShowStatus(statusOverride, "#FFB347");
         else if (!string.IsNullOrEmpty(result.Error))
             ShowStatus(result.Error, "#FFB347");
+        else if (_autoConnect)
+            ShowStatus($"已识别{result.KindName}，正在自动连接…", "#4C8DFF");
+        else if (result.ImageEnhanced)
+            ShowStatus("已做图像增强，请对照原图核对设备码和密码后点「连接」", "#FFB347");
+        else if (result.PasswordNeedsReview)
+            ShowStatus(result.HasPassword
+                ? "密码没识别清楚，请对照截图修改后点「连接」"
+                : "截图中的密码不可读，请核对或补填；确认允许免密才留空连接", "#FFB347");
         else if (!result.BrandConfident)
-            ShowStatus("没看清是哪个软件：点下面对应按钮直接连（码/密码可改）", "#FFB347");
+            ShowStatus("没看清是哪个软件：点下面对应按钮选定，再点「连接」（码/密码可改）", "#FFB347");
         else
-            ShowStatus("已识别，点软件按钮或按回车连接", "#4C8DFF");
+            ShowStatus("已识别，点「连接」或按回车发起", "#4C8DFF");
 
         CountdownBar.Maximum = AutoCloseSeconds;
         CountdownBar.Value = AutoCloseSeconds;
@@ -86,6 +104,8 @@ public partial class ConfirmCardWindow : Window
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _timer.Tick += OnTick;
+        _autoClose = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+        _autoClose.Tick += (_, _) => { _autoClose.Stop(); Close(); };
 
         // 任一交互都保持气泡，不再自动关闭
         CardBorder.MouseEnter += (_, _) => Hold();
@@ -97,13 +117,77 @@ public partial class ConfirmCardWindow : Window
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
         Closed += OnClosed;
+        _initializing = false;
+        if (!_autoConnect && (result.PasswordNeedsReview || result.ImageEnhanced))
+        {
+            Hold();
+            if (SourcePreview.Source != null) SetPreviewVisible(true);
+        }
 
         Services.Logger.Info($"确认卡显示 默认={_selectedKind switch { RemoteAppKind.ToDesk => "ToDesk", _ => "向日葵" }} " +
                              $"码={result.DeviceCode} 密码={(result.HasPassword ? result.Password : "<免密>")} " +
-                             $"依据=[{result.BrandReason}]");
+                             $"依据=[{result.BrandReason}] 自动连接={autoConnect}");
     }
 
-    /// <summary>切换两个软件大按钮的选中高亮。</summary>
+    private void PreparePreview(BitmapSource? thumb)
+    {
+        PreviewBtn.Visibility = Visibility.Collapsed;
+        if (thumb == null) return;
+        try
+        {
+            var image = Services.OcrService.RotateForOcr(thumb, _result.ImageRotation);
+            // 保留整张截图。只围绕设备码裁固定高度会丢掉下方或右侧的密码。
+            SourcePreview.Source = image;
+            PreviewBtn.Visibility = Visibility.Visible;
+        }
+        catch (Exception ex) { Services.Logger.Warn("截图预览失败：" + ex.Message); }
+    }
+
+    private void SetPreviewVisible(bool visible)
+    {
+        PreviewBorder.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        PreviewBtn.Content = visible ? "收起截图" : "查看截图";
+        Height = _baseHeight + (visible ? 130 : 0);
+        PlaceByAnchor(_anchor);
+    }
+
+    private void PreviewBtn_Click(object sender, RoutedEventArgs e)
+    {
+        Hold();
+        SetPreviewVisible(PreviewBorder.Visibility != Visibility.Visible);
+    }
+
+    private void SourcePreview_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_connecting || _closed || SourcePreview.Source is not BitmapSource source) return;
+        Hold();
+        if (_sourceWindow != null) { _sourceWindow.Activate(); return; }
+        var image = new System.Windows.Controls.Image { Source = source, Stretch = Stretch.None,
+            Width = source.PixelWidth, Height = source.PixelHeight };
+        var viewer = new ScrollViewer { Content = image, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Background = Brushes.Black };
+        var area = SystemParameters.WorkArea;
+        var window = new Window { Title = "完整截图（可滚动查看）", Owner = this, Content = viewer,
+            Width = Math.Min(Math.Max(source.PixelWidth + 40, 440), area.Width - 40),
+            Height = Math.Min(source.PixelHeight + 65, area.Height - 60),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, ShowInTaskbar = false, Topmost = true };
+        _sourceWindow = window;
+        _keyHook.HookEnter = false;
+        window.Closed += (_, _) => { _sourceWindow = null; _keyHook.HookEnter = !_connecting && !_closed; };
+        window.Show();
+    }
+
+    private void InputBox_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_connecting || _closed || sender is not System.Windows.Controls.TextBox field || !field.IsEnabled) return;
+        Hold();
+        // 不激活显示的卡片可能只有 WPF 逻辑焦点，键盘仍送往之前的窗口。
+        // 用户明确点击编辑时再激活卡片并给键盘焦点，初次显示仍不抢前台。
+        Activate();
+        System.Windows.Input.Keyboard.Focus(field);
+    }
+
+    /// <summary>切换两个软件大按钮的选中高亮（只选择，不发起连接；发起由「连接」按钮/回车负责）。</summary>
     private void SetSelected(RemoteAppKind kind)
     {
         _selectedKind = kind;
@@ -116,14 +200,18 @@ public partial class ConfirmCardWindow : Window
 
     private void SunBtn_Click(object sender, RoutedEventArgs e)
     {
+        if (_connecting) return;
         SetSelected(RemoteAppKind.Sunlogin);
-        Accept(RemoteAppKind.Sunlogin);
+        Hold();
+        ShowStatus("已选向日葵，点「连接」发起（码/密码可改）", "#4C8DFF");
     }
 
     private void TdBtn_Click(object sender, RoutedEventArgs e)
     {
+        if (_connecting) return;
         SetSelected(RemoteAppKind.ToDesk);
-        Accept(RemoteAppKind.ToDesk);
+        Hold();
+        ShowStatus("已选 ToDesk，点「连接」发起（码/密码可改）", "#4C8DFF");
     }
 
     private void PwdBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -303,24 +391,30 @@ public partial class ConfirmCardWindow : Window
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
-        _keyHook.EnterPressed += () => Dispatcher.BeginInvoke(new Action(() => Accept(_selectedKind)));
-        _keyHook.EscapePressed += () => Dispatcher.BeginInvoke(new Action(() => Cancel("Esc")));
+        _keyHook.EnterPressed += () => Dispatcher.BeginInvoke(new Action(() => Connect()));
+        _keyHook.EscapePressed += () => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_sourceWindow != null) _sourceWindow.Close();
+            else Stop();
+        }));
         try { _keyHook.Install(); }
         catch (Exception ex) { Services.Logger.Error("键盘钩子装载失败", ex); }
     }
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
     {
-        Services.Logger.Info($"确认气泡显示 Left={Left:F0} Top={Top:F0} {Width:F0}x{Height:F0}（8 秒无交互自动关闭）");
+        Services.Logger.Info($"确认气泡显示 Left={Left:F0} Top={Top:F0} {Width:F0}x{Height:F0}");
         _autoDeadline = DateTime.Now.AddSeconds(AutoCloseSeconds);
         _timer.Start();
         // 密码未通过/需要密码而自动弹出时，光标直接落密码框并全选，方便立刻改
         if (_focusPwd) { PwdBox.Focus(); PwdBox.SelectAll(); }
+        // 品牌铁证自动直连：加载完立即发起
+        if (_autoConnect) Dispatcher.BeginInvoke(new Action(() => Connect()));
     }
 
     private void OnTick(object? sender, EventArgs e)
     {
-        if (_held || _busy) { _timer.Stop(); return; }
+        if (_held || _connecting || _failed) { _timer.Stop(); return; }
         var remain = (_autoDeadline - DateTime.Now).TotalSeconds;
         if (remain <= 0)
         {
@@ -332,12 +426,11 @@ public partial class ConfirmCardWindow : Window
         UpdateHint(remain);
     }
 
-    /// <summary>客服开始看/操作气泡：停止自动关闭并保持，等点软件按钮、回车或手动关。</summary>
+    /// <summary>客服开始看/操作气泡：停止自动关闭并保持。</summary>
     private void Hold()
     {
-        if (_held) return;
+        if (_initializing || _held) return;
         _held = true;
-        // 构造期给 CodeBox/PwdBox 赋初值也会触发 TextChanged→Hold()，此刻 _timer 可能尚未创建
         _timer?.Stop();
         if (CountdownBar != null) CountdownBar.Visibility = Visibility.Collapsed;
         UpdateHint(null);
@@ -347,64 +440,167 @@ public partial class ConfirmCardWindow : Window
 
     private void UpdateHint(double? remain)
     {
-        string enter = $"回车连{KindShortName(_selectedKind)}";
-        string tail = " · 点软件名直连 · " + enter + " · Esc / × 关闭";
-        HintText.Text = remain.HasValue
-            ? $"{remain.Value:0} 秒后自动关闭{tail}"
-            : tail.TrimStart(' ', '·');
+        string baseText = _connecting
+            ? "正在连接… 点「停止」或按 Esc 中止"
+            : _failed
+                ? "改好后点「连接」重试 · Esc / 停止关闭"
+                : "回车连接 · Esc / 停止关闭";
+        HintText.Text = remain.HasValue && !_connecting && !_failed
+            ? $"{remain.Value:0} 秒后自动关闭 · " + baseText
+            : baseText;
     }
 
-    private async void Accept(RemoteAppKind kind)
+    /// <summary>点「连接」：按卡片上的软件/码/密码发起，结果在卡片内流转（成功自动关，失败停留可改）。</summary>
+    private async void Connect()
     {
-        if (_busy) return;
+        if (_connecting || _closed) return;
         _timer.Stop();
         Hold();
-        SetSelected(kind);
 
         var code = (CodeBox.Text ?? "").Trim().Replace(" ", "");
         var pwd = (PwdBox.Text ?? "").Trim();
 
-        if (code.Length < 9)
+        bool validLength = _selectedKind == RemoteAppKind.ToDesk
+            ? code.Length == 9
+            : code.Length is 9 or 10;
+        if (!validLength || !code.All(c => c is >= '0' and <= '9'))
         {
-            ShowStatus("设备码不对（应 9~10 位数字），请在卡片上修改", "#FF6B6B");
+            ShowStatus(_selectedKind == RemoteAppKind.ToDesk
+                ? "ToDesk 设备码应为 9 位数字，请在卡片上修改"
+                : "向日葵识别码应为 9~10 位数字，请在卡片上修改", "#FF6B6B");
             CodeBox.Focus();
             return;
         }
 
-        _busy = true;
-        ShowStatus($"正在打开{KindShortName(kind)}并连接…", "#4C8DFF");
-        HintText.Text = "正在连接，可在状态小条按 Esc 或点「取消连接」中止";
+        _connecting = true;
+        _keyHook.HookEnter = false;
+        _failed = false;
         SetInputsEnabled(false);
-        Services.Logger.Info($"卡片确认连接：{KindShortName(kind)} 码={code} 密码={(string.IsNullOrEmpty(pwd) ? "<免密>" : pwd)}");
+        ConnectBtn.IsEnabled = false;
+        StopBtn.IsEnabled = true;
+        StopBtn.Content = "停止";
+        ShowStatus($"正在打开{KindShortName(_selectedKind)}并连接…", "#4C8DFF");
+        UpdateHint(null);
+        Services.Logger.Info($"卡片发起连接：{KindShortName(_selectedKind)} 码={code} 密码={(string.IsNullOrEmpty(pwd) ? "<免密>" : pwd)}");
 
+        var ctx = new ConnectionContext(_selectedKind);
+        _ctx = ctx;
         try
         {
-            // 交给 App：关闭卡片、弹状态小条走可取消连接（Esc/取消按钮/看门狗/点连接后断开兜底都在状态小条上）
-            await _onConfirmed(kind, code, pwd);
-            _closedTcs.TrySetResult(true);
-            Close();
+            var res = await _onConnect(_selectedKind, code, pwd, ctx);
+            if (!_closed) ApplyResult(res);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!_closed) ApplyResult(ConnectResult.Cancel());
         }
         catch (Exception ex)
         {
             Services.Logger.Error("卡片发起连接异常", ex);
-            ShowStatus("连接异常：" + ex.Message, "#FF6B6B");
-            HintText.Text = "改好后点软件按钮 / 回车重试 · Esc 取消";
-            SetInputsEnabled(true);
-            _busy = false;
+            if (!_closed)
+            {
+                ShowStatus("连接异常：" + ex.Message, "#FF6B6B");
+                EnterFailedState();
+            }
+        }
+        finally
+        {
+            _connecting = false;
+            if (_closed) _closedTcs.TrySetResult(false);
         }
     }
+
+    /// <summary>按连接终态流转：成功短暂停留后自动消失；失败/要密码停留可改；取消短暂提示后关闭。</summary>
+    private void ApplyResult(ConnectResult res)
+    {
+        _connecting = false;
+        _keyHook.HookEnter = true;
+        switch (res.Status)
+        {
+            case ConnectStatus.Launched:
+                ShowStatus(res.Message ?? "已发起连接", "#3AD17A");
+                SetInputsEnabled(false);
+                ConnectBtn.IsEnabled = false;
+                StopBtn.IsEnabled = false;
+                HintText.Text = "连接已发起，气泡即将消失";
+                _autoClose.Interval = TimeSpan.FromMilliseconds(1500);
+                _autoClose.Start();
+                break;
+            case ConnectStatus.Cancelled:
+                ShowStatus(res.Message ?? "已取消", "#8A8A96");
+                SetInputsEnabled(false);
+                ConnectBtn.IsEnabled = false;
+                StopBtn.IsEnabled = false;
+                _autoClose.Interval = TimeSpan.FromMilliseconds(1100);
+                _autoClose.Start();
+                break;
+            case ConnectStatus.NeedPassword:
+                ShowStatus(res.Message ?? "需要密码", "#FFB347");
+                EnterFailedState();
+                PwdBox.Focus();
+                PwdBox.SelectAll();
+                break;
+            default:
+                ShowStatus(res.Message ?? "连接未成功", "#FF6B6B");
+                EnterFailedState();
+                break;
+        }
+    }
+
+    /// <summary>失败/需要密码停留态：不再自动关闭，输入与「连接」恢复可用，客服改完重试。</summary>
+    private void EnterFailedState()
+    {
+        _connecting = false;
+        _keyHook.HookEnter = true;
+        _failed = true;
+        _timer.Stop();
+        CountdownBar.Visibility = Visibility.Collapsed;
+        SetInputsEnabled(true);
+        ConnectBtn.IsEnabled = true;
+        StopBtn.IsEnabled = true;
+        StopBtn.Content = "停止";
+        UpdateHint(null);
+    }
+
+    /// <summary>点「停止」/Esc：连接中=取消（已点连接则由 App 做断开兜底）；等待或失败态=直接关闭卡片。</summary>
+    private void Stop()
+    {
+        if (_closed) return;
+        if (_connecting)
+        {
+            StopBtn.IsEnabled = false;
+            ShowStatus("正在取消…", "#8A8A96");
+            Services.Logger.Info("用户在卡片点停止（连接中）");
+            _ctx?.CancelByUser();
+            return;
+        }
+        Cancel("停止");
+    }
+
+    private void StopBtn_Click(object sender, RoutedEventArgs e) => Stop();
+
+    private void ConnectBtn_Click(object sender, RoutedEventArgs e) => Connect();
 
     private void Cancel(string reason)
     {
         if (_closed) return;
+        if (_connecting) _ctx?.CancelByUser();
         _closed = true;
         _timer.Stop();
-        Services.Logger.Info($"卡片取消（{reason}），未连接 码={(CodeBox.Text ?? "").Trim().Replace(" ", "")}");
-        _closedTcs.TrySetResult(false);
+        _autoClose.Stop();
+        Services.Logger.Info($"卡片取消（{reason}） 码={(CodeBox.Text ?? "").Trim().Replace(" ", "")}");
+        // 卡片可立即隐藏，但连接收尾完成前仍占住主管线，避免新旧自动化同时输入。
+        if (!_connecting) _closedTcs.TrySetResult(false);
         Close();
     }
 
     private void CloseBtn_Click(object sender, System.Windows.Input.MouseButtonEventArgs e) => Cancel("手动关闭");
+
+    /// <summary>外部强制关闭（如悬浮球触发"关旧卡重新识别"）：连接中先取消连接，再走统一关闭。</summary>
+    public void ForceClose(string reason = "重新识别")
+    {
+        Cancel(reason);
+    }
 
     private void Card_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e) => Hold();
 
@@ -414,6 +610,10 @@ public partial class ConfirmCardWindow : Window
         TdBtn.IsEnabled = enabled;
         CodeBox.IsEnabled = enabled;
         PwdBox.IsEnabled = enabled;
+        CandidatePanel.IsEnabled = enabled;
+        PwdCandidatePanel.IsEnabled = enabled;
+        PreviewBtn.IsEnabled = enabled;
+        SourcePreview.IsHitTestVisible = enabled;
     }
 
     private void ShowStatus(string msg, string color)
@@ -425,9 +625,12 @@ public partial class ConfirmCardWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _sourceWindow?.Close();
+        if (_connecting) _ctx?.CancelByUser();
         _timer.Stop();
+        _autoClose.Stop();
         try { _keyHook.Dispose(); } catch { }
         _closed = true;
-        _closedTcs.TrySetResult(false);
+        if (!_connecting) _closedTcs.TrySetResult(false);
     }
 }

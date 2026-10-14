@@ -5,8 +5,7 @@ namespace RemoteConnectHelper.Automation;
 
 /// <summary>
 /// 一次自动连接的上下文：承载取消令牌、是否已经点下"连接"（越过不可撤回点）。
-/// 速度优先方案（B）：识别即连，状态小条上的"取消"在点连接前可干净中止；
-/// 点下连接后语义变为"断开"（尽力关闭新弹出的会话窗）。
+/// 确认气泡卡上的「停止」在点连接前可干净中止；点下连接后语义变为"断开"（尽力关闭新弹出的会话窗）。
 /// </summary>
 public sealed class ConnectionContext
 {
@@ -19,7 +18,7 @@ public sealed class ConnectionContext
     public bool ConnectClicked => _connectClicked;
 
     private volatile bool _userCancelled;
-    /// <summary>是否为用户在状态小条上主动取消（区别于 35s 看门狗的超时取消）。</summary>
+    /// <summary>是否为用户在确认气泡卡上主动停止（区别于 35s 看门狗的超时取消）。</summary>
     public bool UserCancelled => _userCancelled;
 
     public ConnectionContext(RemoteAppKind kind) => Kind = kind;

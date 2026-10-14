@@ -4,8 +4,41 @@
         WindowStyle="None" AllowsTransparency="True" ResizeMode="NoResize"
         ShowInTaskbar="False" Topmost="True" ShowActivated="False"
         WindowStartupLocation="Manual"
-        Width="440" Height="356"
+        Width="440" Height="380"
         Background="Transparent" FontFamily="Microsoft YaHei UI">
+    <Window.Resources>
+        <!-- 主按钮（连接）：主题蓝底白字，圆角 -->
+        <Style x:Key="PrimaryBtn" TargetType="Button">
+            <Setter Property="Background" Value="#3D6FE8"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#4F7FF5"/>
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#3360C9"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <!-- 次级按钮（停止）：深灰底浅字，细描边，圆角 -->
+        <Style x:Key="SecondaryBtn" TargetType="Button">
+            <Setter Property="Background" Value="#2E2E38"/>
+            <Setter Property="Foreground" Value="#C9C9D4"/>
+            <Setter Property="BorderBrush" Value="#3D3D4A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontWeight" Value="Normal"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#3A3A46"/>
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#26262F"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
     <Grid Background="Transparent">
         <!-- 指向悬浮球的小尾巴，方位/旋转由代码按球的位置设置 -->
         <Polygon x:Name="Tail" Points="0,0 18,0 9,11" Fill="#1E1E26"
@@ -27,6 +60,9 @@
                 <Grid Height="26" Margin="0,0,0,8">
                     <TextBlock Text="远程连接助手" Foreground="#8A8A96" FontSize="12"
                                VerticalAlignment="Center"/>
+                    <Button x:Name="PreviewBtn" Content="查看截图" Width="76" Height="24"
+                            HorizontalAlignment="Right" Margin="0,0,32,0" FontSize="11"
+                            Style="{StaticResource SecondaryBtn}" Click="PreviewBtn_Click"/>
                     <Border x:Name="CloseBtn" Width="24" Height="24" HorizontalAlignment="Right"
                             Background="Transparent" Cursor="Hand" MouseLeftButtonUp="CloseBtn_Click">
                         <TextBlock Text="✕" Foreground="#9A9AA6" FontSize="13"
@@ -58,6 +94,7 @@
                                  Background="#2C2C36" Foreground="White" CaretBrush="White"
                                  BorderBrush="#3D3D4A" BorderThickness="1"
                                  VerticalContentAlignment="Center" Padding="6,1"
+                                 InputMethod.IsInputMethodEnabled="False" PreviewMouseLeftButtonDown="InputBox_PreviewMouseLeftButtonDown"
                                  GotFocus="CodeBox_GotFocus" TextChanged="CodeBox_TextChanged"/>
                         <WrapPanel x:Name="CandidatePanel" Margin="2,6,0,0" Visibility="Collapsed"/>
                     </StackPanel>
@@ -72,6 +109,7 @@
                                      Background="Transparent" BorderThickness="0" Foreground="White"
                                      CaretBrush="White"
                                      VerticalContentAlignment="Center" Padding="4,3"
+                                     InputMethod.IsInputMethodEnabled="False" PreviewMouseLeftButtonDown="InputBox_PreviewMouseLeftButtonDown"
                                      TextChanged="PwdBox_TextChanged"/>
                             <TextBlock x:Name="PwdPlaceholder" Text="无密码留空＝免密直连"
                                        Foreground="#6A6A76" FontSize="13" IsHitTestVisible="False"
@@ -81,12 +119,35 @@
                     </StackPanel>
                 </Border>
 
+                <Border x:Name="PreviewBorder" Height="120" Margin="0,0,0,10" Visibility="Collapsed"
+                        Background="#26262F" CornerRadius="8" ClipToBounds="True">
+                    <Image x:Name="SourcePreview" Stretch="Uniform" Cursor="Hand"
+                           ToolTip="点击放大完整原图，可滚动查看" MouseLeftButtonUp="SourcePreview_MouseLeftButtonUp"/>
+                </Border>
+
                 <TextBlock x:Name="StatusText" Foreground="#FFB347" FontSize="12"
                            TextWrapping="Wrap" Margin="2,2,0,4" Visibility="Collapsed"/>
 
                 <ProgressBar x:Name="CountdownBar" Height="4" Minimum="0" Maximum="8"
                              Value="8" Margin="2,2,2,2" Background="#2C2C36"
                              Foreground="#7A8194" BorderThickness="0"/>
+
+                <!-- 操作行：停止（次级）在左、连接（主按钮蓝）在右，等宽并排右对齐 -->
+                <Grid Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="10"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="StopBtn" Grid.Column="1" Height="34" MinWidth="110"
+                            Cursor="Hand" FontSize="14" Click="StopBtn_Click"
+                            Style="{StaticResource SecondaryBtn}" Content="停止"/>
+                    <Button x:Name="ConnectBtn" Grid.Column="3" Height="34" MinWidth="120"
+                            Cursor="Hand" FontSize="14" Click="ConnectBtn_Click"
+                            Style="{StaticResource PrimaryBtn}" Content="连接"/>
+                </Grid>
+
                 <TextBlock x:Name="HintText" Foreground="#9A9AA6" FontSize="11"
                            HorizontalAlignment="Center" Margin="0,3,0,0"/>
             </StackPanel>

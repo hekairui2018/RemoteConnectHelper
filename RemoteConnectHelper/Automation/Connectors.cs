@@ -149,8 +149,10 @@ internal static class CoordOps
     /// </summary>
     public static void ClickField(ScreenOps.Win win, double cx, double cy, ConnectionContext? ctx = null, bool slow = false)
     {
+        ctx?.ThrowIfCancellationRequested();
         ScreenOps.ClickClient(win, cx, cy, slow ? 160 : 80);
         ConnWait.Sleep(ctx, slow ? 620 : 380);
+        ctx?.ThrowIfCancellationRequested();
     }
 
     public static void Fill(ScreenOps.Win win, double cx, double cy, string text,
@@ -219,13 +221,7 @@ public sealed class SunloginConnector : IRemoteConnector
 
             Logger.Info($"向日葵 定位 设备码@({codeCx:F0},{codeCy:F0}) 验证码框={(havePwdBox ? $"({pwdCx:F0},{pwdCy:F0})" : "无")}");
 
-            CoordOps.Fill(win, codeCx, codeCy, deviceCode, ctx);
-            Logger.Info($"向日葵 填入识别码 {deviceCode}");
-            if (!string.IsNullOrEmpty(password))
-            {
-                CoordOps.Fill(win, pwdCx, pwdCy, password, ctx);
-                Logger.Info("向日葵 填入验证码");
-            }
+            FillCredentials(win, codeCx, codeCy, pwdCx, pwdCy, deviceCode, password, ctx);
         }
 
         // 填完码后连接按钮才由禁用灰变亮蓝，重新截图定位；找不到亮蓝（疑似丢键）就慢速重填一次
@@ -238,8 +234,7 @@ public sealed class SunloginConnector : IRemoteConnector
             var (btnX, btnY, refilled) = LocateConnectButton(win, bmp2, rowY, () =>
             {
                 Logger.Warn("向日葵 未检测到亮蓝连接按钮，疑似填码丢失，慢速重填一次");
-                CoordOps.Fill(win, codeCx, codeCy, deviceCode, ctx, slow: true);
-                if (!string.IsNullOrEmpty(password)) CoordOps.Fill(win, pwdCx, pwdCy, password, ctx, slow: true);
+                FillCredentials(win, codeCx, codeCy, pwdCx, pwdCy, deviceCode, password, ctx, slow: true);
             });
 
             ctx?.ThrowIfCancellationRequested();   // 点连接前最后一道闸：此后取消按"断开"处理
@@ -250,6 +245,17 @@ public sealed class SunloginConnector : IRemoteConnector
         finally { bmp2.Dispose(); }
 
         return PostConnect(ctx);
+    }
+
+    private static void FillCredentials(ScreenOps.Win win, double codeCx, double codeCy,
+                                        double pwdCx, double pwdCy, string deviceCode, string password,
+                                        ConnectionContext? ctx, bool slow = false)
+    {
+        CoordOps.Fill(win, codeCx, codeCy, deviceCode, ctx, slow);
+        Logger.Info($"向日葵 填入识别码 {deviceCode}");
+        // 空密码也必须清空验证码框；正常填写和慢速重填使用同一规则。
+        CoordOps.Fill(win, pwdCx, pwdCy, password, ctx, slow);
+        Logger.Info(string.IsNullOrEmpty(password) ? "向日葵 已清空验证码（免密）" : "向日葵 填入验证码");
     }
 
     /// <summary>找亮蓝连接按钮；正常路径直接复用定位阶段算好的输入行 y（不再 OCR，省约 300ms）；

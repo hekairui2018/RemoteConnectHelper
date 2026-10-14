@@ -1,0 +1,13 @@
+[
+  {
+    "File": "local-photo.png",
+    "Code": "123456789",
+    "Password": "Ab1234",
+    "X": 100,
+    "Y": 100,
+    "Rotation": 0,
+    "Width": 800,
+    "Height": 600,
+    "Purpose": "ocr"
+  }
+]
