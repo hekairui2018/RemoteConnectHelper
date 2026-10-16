@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>RemoteConnectHelper.V2</AssemblyName>
+    <RootNamespace>RemoteConnectHelper.V2</RootNamespace>
+    <Version>2.0.0</Version>
+    <ApplicationIcon>../RemoteConnectHelper/Assets/app.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="RapidOcrNet" Version="4.2.0" />
+    <None Update="Models/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Update="ThirdParty/**/*;README.md;THIRD-PARTY.md;CHANGELOG.md" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Resource Include="../RemoteConnectHelper/Assets/app_glyph.png" Link="Assets/app_glyph.png" />
+  </ItemGroup>
+</Project>

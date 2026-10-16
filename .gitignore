@@ -20,3 +20,6 @@ selftest_out/
 /testcases/T19_sun_maskpwd_491.png
 /testcases/T20_report_sun_603.png
 /testcases/private-fixtures.json
+
+# 二代模型由下载脚本校验后安装，识别明细及凭据留在被忽略的 obj 目录。
+/RemoteConnectHelper.V2/Models/*.onnx

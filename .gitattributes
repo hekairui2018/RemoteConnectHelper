@@ -1,0 +1,3 @@
+# Preserve the official dictionary hashes and original third-party notices.
+RemoteConnectHelper.V2/Models/ppocrv5_dict.txt -text
+RemoteConnectHelper.V2/ThirdParty/* -text
