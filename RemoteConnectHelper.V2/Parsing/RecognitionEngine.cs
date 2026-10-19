@@ -25,8 +25,9 @@ public sealed class RecognitionEngine
         var codes = ExtractCodes(rows, software, document);
         var allPasswords = codes.SelectMany(c => ExtractPasswords(tokens, rows, c, software)).ToList();
         // 密码是否与设备码成对，仅影响候选排序，不作为必须有密码才能连接的门槛。
-        codes = codes.OrderByDescending(c => c.RuleScore + Math.Max(0,
-            allPasswords.Where(p => p.DeviceCandidateId == c.Id).Select(p => p.RuleScore).DefaultIfEmpty(0).Max() - 60) * 1.2).ToList();
+        codes = codes.Select(c => c with { PairingScore = c.RuleScore + Math.Max(0,
+            allPasswords.Where(p => p.DeviceCandidateId == c.Id).Select(p => p.RuleScore).DefaultIfEmpty(0).Max() - 60) * 1.2 })
+            .OrderByDescending(c => c.RankingScore).ToList();
         return new ConfidenceEngine().Decide(document, software, codes, allPasswords);
     }
 
@@ -98,6 +99,7 @@ public sealed class RecognitionEngine
                     parts.Add(current); value += digits;
                     if (value.Length > 10) break;
                     if (value.Length is not (9 or 10)) continue;
+                    if (!parts.Any(t => t.Text.Any(char.IsDigit))) continue;
                     // 不能取手机号的末 9/10 位，也不能取一个未结束的数字串前缀。
                     if (i > 0 && TryDigits(ordered[i - 1].Text, out _) && ordered[i].Layout.X - ordered[i - 1].Layout.Right < ordered[i].Layout.Height * .5) continue;
                     if (j + 1 < ordered.Count && TryDigits(ordered[j + 1].Text, out _) && ordered[j + 1].Layout.X - current.Layout.Right < current.Layout.Height * .5) continue;
@@ -116,8 +118,12 @@ public sealed class RecognitionEngine
                     var confidence = Average(parts.Select(t => t.Source.Confidence));
                     if (confidence.HasValue) score += (confidence.Value - .5) * 10;
                     if (result.Any(c => c.Value == value && Math.Abs(c.ReadingBounds.CenterY - bounds.CenterY) < 10)) continue;
+                    string rawText = string.Concat(parts.Select(t => t.Text));
+                    bool converted = rawText != value;
+                    if (converted) evidence.Add("包含形近字符转数字，需核对原文");
                     result.Add(new("code-" + result.Count, value, app, Box.Union(parts.Select(t => t.Original)), bounds,
-                        confidence, Math.Clamp(score, 0, 100), parts.Select(t => t.Source.Id).Distinct().ToArray(), evidence.ToArray()));
+                        confidence, Math.Clamp(score, 0, 100), parts.Select(t => t.Source.Id).Distinct().ToArray(), evidence.ToArray())
+                    { RawText = rawText, HadCharacterConversion = converted, MinimumOcrConfidence = Minimum(parts.Select(t => t.Source.Confidence)) });
                 }
             }
         }
@@ -141,9 +147,10 @@ public sealed class RecognitionEngine
             }
             foreach (var run in runs.Where(r => r.Count > 0))
             {
-                string value = string.Concat(run.Select(t => t.Text)).Replace('×', 'X');
+                string rawText = string.Concat(run.Select(t => t.Text));
+                string value = rawText.Replace('×', 'X');
                 if (value.Length is < 4 or > 20 || Brands.Any(b => value.Contains(b, StringComparison.OrdinalIgnoreCase))) continue;
-                if (TryDigits(value, out var number) && number.Length is 9 or 10) continue;
+                if (value.Any(char.IsDigit) && TryDigits(value, out var number) && number.Length is 9 or 10) continue;
                 if (Regex.IsMatch(value, @"\d{9,}")) continue;
                 var bounds = Box.Union(run.Select(t => t.Layout));
                 double dy = Math.Abs(bounds.CenterY - code.ReadingBounds.CenterY);
@@ -173,7 +180,8 @@ public sealed class RecognitionEngine
                 var confidence = Average(run.Select(t => t.Source.Confidence));
                 if (confidence.HasValue) score += (confidence.Value - .5) * 10;
                 found.Add(new(value, code.Id, code.App, Box.Union(run.Select(t => t.Original)), confidence,
-                    Math.Clamp(score, 0, 100), run.Select(t => t.Source.Id).Distinct().ToArray(), evidence.ToArray()));
+                    Math.Clamp(score, 0, 100), run.Select(t => t.Source.Id).Distinct().ToArray(), evidence.ToArray())
+                { RawText = rawText, HadCharacterConversion = rawText != value, MinimumOcrConfidence = Minimum(run.Select(t => t.Source.Confidence)) });
             }
         }
         return found.GroupBy(p => p.Value).Select(g => g.MaxBy(p => p.RuleScore)!).OrderByDescending(p => p.RuleScore);
@@ -210,11 +218,16 @@ public sealed class RecognitionEngine
         var known = values.Where(v => v.HasValue).Select(v => v!.Value).ToArray();
         return known.Length > 0 ? known.Average() : null;
     }
+    private static float? Minimum(IEnumerable<float?> values)
+    {
+        var known = values.Where(v => v.HasValue).Select(v => v!.Value).ToArray();
+        return known.Length > 0 ? known.Min() : null;
+    }
     private static string Flat(string text) => string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
     private static bool TryDigits(string text, out string value)
     {
         value = "";
-        if (!text.Any(char.IsDigit)) return false;
+        if (text.Length == 0) return false;
         foreach (char c in text)
         {
             char mapped = c switch { 'O' or 'o' => '0', 'I' or 'l' or '|' => '1', 'S' => '5', 'Z' => '2', 'B' => '8', _ => c };

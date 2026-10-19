@@ -8,7 +8,15 @@ public static class Benchmark
 {
     public sealed record Expected(string Image, string Sha256, string App, string Code, string Password, string Decision);
     public sealed record Manifest(string FrozenAt, string Notes, Expected[] Cases);
-    public sealed record Actual(string App, string Code, string Password, string Decision, string Engine, string Variant);
+    public sealed record Actual(string App, string Code, string Password, string Decision, string Engine, string Variant)
+    {
+        public int Attempts { get; init; }
+        public float? CodeConfidence { get; init; }
+        public float? MinimumCodeConfidence { get; init; }
+        public bool ConvertedCode { get; init; }
+        public double? CandidateGap { get; init; }
+        public IReadOnlyList<string> Risks { get; init; } = [];
+    }
     public sealed record Row(Expected Expected, Actual? Actual, bool Passed, long Ms, string? Error);
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     public static async Task<int> RunAsync(string folder, string manifestPath, string output)
@@ -35,12 +43,19 @@ public static class Benchmark
             try
             {
                 var r = await pipeline.AnalyzeAsync(await File.ReadAllBytesAsync(Path.Combine(folder, c.Image)), CancellationToken.None);
-                var a = new Actual(r.AppName, r.DeviceCode, r.Password, r.Decision.ToString(), r.Document.Engine, r.Document.Variant);
+                var next = r.DeviceCodes.FirstOrDefault(c => c.Value != r.DeviceCode || c.App != r.App);
+                var a = new Actual(r.AppName, r.DeviceCode, r.Password, r.Decision.ToString(), r.Document.Engine, r.Document.Variant)
+                {
+                    Attempts = r.Attempts.Count, CodeConfidence = r.SelectedCode?.OcrConfidence,
+                    MinimumCodeConfidence = r.SelectedCode?.MinimumOcrConfidence, ConvertedCode = r.SelectedCode?.HadCharacterConversion ?? false,
+                    CandidateGap = next != null && r.SelectedCode != null ? r.SelectedCode.RankingScore - next.RankingScore : null,
+                    Risks = r.Warnings
+                };
                 bool passed = c.App == a.App && c.Code == a.Code && c.Password == a.Password && c.Decision == a.Decision;
                 rows.Add(new(c, a, passed, timer.ElapsedMilliseconds, null));
                 Console.WriteLine($"{(passed ? "PASS" : "FAIL")} {c.Image} ({timer.ElapsedMilliseconds}ms)");
                 // Full local diagnostic evidence, never copied to public source/release automatically.
-                if (!passed) await File.WriteAllTextAsync(Path.Combine(output, c.Image + ".details.json"), JsonSerializer.Serialize(r, Json));
+                await File.WriteAllTextAsync(Path.Combine(output, c.Image + ".details.json"), JsonSerializer.Serialize(r, Json));
             }
             catch (Exception ex) { rows.Add(new(c, null, false, timer.ElapsedMilliseconds, ex.ToString())); Console.WriteLine("ERROR " + c.Image); }
             await File.WriteAllTextAsync(Path.Combine(output, "results.json"), JsonSerializer.Serialize(rows, Json));

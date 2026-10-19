@@ -4,6 +4,10 @@
 
 ## 二代测试版
 
+main 已包含第一阶段识别可靠性优化：保留形近字转换与原始文字证据，对低置信度、近分目标和跨 OCR 冲突转人工核对；清晰图保留单次主 OCR。现有 Release `.02` 是优化前的运行包，尚未重新发布。当前源码检查为35项内部回归通过。
+
+新增本机标注页面生成器和无答案图片探测工具，见[本地测试工具说明](RemoteConnectHelper.V2/scripts/README.md)。真实客户图片、答案、识别凭据及生成的核对页面不公开上传。
+
 - [二代完整测试包与版本说明](https://github.com/hekairui2018/RemoteConnectHelper/releases/tag/v2.0.0-test.20261015.02)
 - [二代源码与构建说明](RemoteConnectHelper.V2/README.md)
 - 二代使用 RapidOCR / PP-OCRv5 中文模型，Windows OCR 兜底；软件、设备码、密码按原图位置配对。

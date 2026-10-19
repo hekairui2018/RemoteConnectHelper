@@ -28,15 +28,32 @@ public sealed record OcrDocument(IReadOnlyList<OcrTextBlock> Blocks, int Width, 
 
 public sealed record SoftwareCandidate(RemoteApp App, double RuleScore, Box Bounds, string[] BlockIds, string[] Evidence);
 public sealed record DeviceCodeCandidate(string Id, string Value, RemoteApp App, Box Bounds, Box ReadingBounds,
-    float? OcrConfidence, double RuleScore, string[] BlockIds, string[] Evidence);
+    float? OcrConfidence, double RuleScore, string[] BlockIds, string[] Evidence)
+{
+    public string RawText { get; init; } = "";
+    public bool HadCharacterConversion { get; init; }
+    public float? MinimumOcrConfidence { get; init; }
+    public double? PairingScore { get; init; }
+    public double RankingScore => PairingScore ?? RuleScore;
+}
 public sealed record PasswordCandidate(string Value, string DeviceCandidateId, RemoteApp App, Box Bounds,
-    float? OcrConfidence, double RuleScore, string[] BlockIds, string[] Evidence);
+    float? OcrConfidence, double RuleScore, string[] BlockIds, string[] Evidence)
+{
+    public string RawText { get; init; } = "";
+    public bool HadCharacterConversion { get; init; }
+    public float? MinimumOcrConfidence { get; init; }
+}
+
+public sealed record OcrAttempt(OcrDocument Document, IReadOnlyList<DeviceCodeCandidate> DeviceCodes,
+    IReadOnlyList<PasswordCandidate> Passwords, DeviceCodeCandidate? SelectedCode, PasswordCandidate? SelectedPassword);
 
 public sealed record RecognitionResult(OcrDocument Document, IReadOnlyList<SoftwareCandidate> Software,
     IReadOnlyList<DeviceCodeCandidate> DeviceCodes, IReadOnlyList<PasswordCandidate> Passwords,
     DeviceCodeCandidate? SelectedCode, PasswordCandidate? SelectedPassword,
     ConnectionDecision Decision, string Reason, IReadOnlyList<string> Warnings)
 {
+    public IReadOnlyList<OcrAttempt> Attempts { get; init; } = [];
+    public IReadOnlyList<string> CrossCheckIssues { get; init; } = [];
     public RemoteApp App => SelectedCode?.App ?? RemoteApp.Unknown;
     public string DeviceCode => SelectedCode?.Value ?? "";
     public string Password => SelectedPassword?.Value ?? "";
