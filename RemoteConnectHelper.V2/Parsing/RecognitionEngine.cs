@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using RemoteConnectHelper.V2.Domain;
 
 namespace RemoteConnectHelper.V2.Parsing;
@@ -9,7 +9,7 @@ public sealed class RecognitionEngine
     private static readonly string[] SunTerms = ["向日葵", "sunlogin", "awesun", "贝锐", "识别码", "验证码", "简约版", "多协议远控", "远程协助他人", "远程协助本机"];
     private static readonly string[] DeskTerms = ["todesk", "设备代码", "临时密码", "临时码", "安全密码", "devicecode", "temporarypassword"];
     private static readonly string[] PwdTerms = ["验证码", "密码", "安全代码", "临时码", "verificationcode", "password"];
-    private static readonly string[] Brands = ["todesk", "sunlogin", "awesun", "sunflow", "windows", "oray", "download"];
+    private static readonly string[] Brands = ["todesk", "sunlogin", "awesun", "sunflow", "windows", "oray", "download", "anydesk", "gameviewer", "rustdesk", "teamviewer", "ultraviewer"];
     private sealed record Token(string Text, Box Layout, Box Original, OcrTextBlock Source);
     private sealed record Row(List<Token> Tokens)
     {
@@ -23,12 +23,20 @@ public sealed class RecognitionEngine
         var rows = Rows(tokens);
         var software = DetectSoftware(document, rows);
         var codes = ExtractCodes(rows, software, document);
-        var allPasswords = codes.SelectMany(c => ExtractPasswords(tokens, rows, c, software)).ToList();
+        var allPasswords = codes.SelectMany(c => ExtractPasswords(tokens, rows, c, software)
+            .Where(p=>!codes.Any(other=>document.Rotation==0 && other.Id!=c.Id && other.Value!=c.Value && other.App==c.App
+                && Distance(other.ReadingBounds,p.Bounds)+35<Distance(c.ReadingBounds,p.Bounds)))).ToList();
         // 密码是否与设备码成对，仅影响候选排序，不作为必须有密码才能连接的门槛。
         codes = codes.Select(c => c with { PairingScore = c.RuleScore + Math.Max(0,
             allPasswords.Where(p => p.DeviceCandidateId == c.Id).Select(p => p.RuleScore).DefaultIfEmpty(0).Max() - 60) * 1.2 })
             .OrderByDescending(c => c.RankingScore).ToList();
-        return new ConfidenceEngine().Decide(document, software, codes, allPasswords);
+        var result=new ConfidenceEngine().Decide(document, software, codes, allPasswords);
+        string sourceText=string.Concat(document.Blocks.Select(b=>b.Text));
+        if(Regex.IsMatch(sourceText,@"灰\s*Desk",RegexOptions.IgnoreCase)
+            && Regex.IsMatch(sourceText,@"查看原图|收起原图|打开预览|收起预览|清空预览|重新读取|读取新图"))
+            return result with{Decision=ConnectionDecision.Manual,Reason="这是灰Desk界面截图，请复制客户远程软件的原图",
+                Warnings=result.Warnings.Concat(new[]{"助手界面截图不能作为自动连接依据"}).ToArray()};
+        return result;
     }
 
     private static List<Token> Tokenize(OcrDocument doc)
@@ -69,7 +77,7 @@ public sealed class RecognitionEngine
             foreach (var group in Clusters(row.Tokens, 35))
             {
                 string text = Flat(string.Concat(group.Select(t => t.Text)));
-                foreach (var (app, terms) in new[] { (RemoteApp.Sunlogin, SunTerms), (RemoteApp.ToDesk, DeskTerms) })
+                foreach (var (app, terms) in new[] { (RemoteApp.Sunlogin, SunTerms), (RemoteApp.ToDesk, DeskTerms), (RemoteApp.AnyDesk,new[]{"anydesk","此工作台","此桌面"}), (RemoteApp.UU,new[]{"uu远程","网易uu","gameviewer"}), (RemoteApp.RustDesk,new[]{"rustdesk"}), (RemoteApp.TeamViewer,new[]{"teamviewer","与支持人员共享您的id和密码","输入支持人员提供的会话代码"}), (RemoteApp.UltraViewer,new[]{"ultraviewer","允许远程控制","控制远程计算机"}) })
                 {
                     var hits = terms.Where(t => text.Contains(t, StringComparison.OrdinalIgnoreCase)).ToArray();
                     if (hits.Length == 0) continue;
@@ -77,6 +85,12 @@ public sealed class RecognitionEngine
                 }
             }
         }
+        string source=Flat(string.Concat(doc.Blocks.Select(b=>b.Text)));
+        if(Regex.IsMatch(source,@"UU(?:密码|验证码)",RegexOptions.IgnoreCase)&&!result.Any(c=>c.App==RemoteApp.UU))
+            result.Add(new(RemoteApp.UU,90,default,[],["UU密码标签"]));
+        bool newBrand=result.Any(c=>c.App is RemoteApp.AnyDesk or RemoteApp.UU or RemoteApp.RustDesk or RemoteApp.TeamViewer or RemoteApp.UltraViewer);
+        bool oldBrand=result.Any(c=>c.Evidence.Any(e=>Regex.IsMatch(e,@"向日葵|sunlogin|awesun|贝锐|^todesk$",RegexOptions.IgnoreCase)));
+        if(newBrand&&!oldBrand)result.RemoveAll(c=>c.App is RemoteApp.Sunlogin or RemoteApp.ToDesk);
         return result;
     }
 
@@ -98,20 +112,26 @@ public sealed class RecognitionEngine
                     if (parts.Count > 0 && current.Layout.X - parts[^1].Layout.Right > Math.Max(35, current.Layout.Height * 1.8)) break;
                     parts.Add(current); value += digits;
                     if (value.Length > 10) break;
-                    if (value.Length is not (9 or 10)) continue;
+                    if (value.Length is not (7 or 8 or 9 or 10)) continue;
                     if (!parts.Any(t => t.Text.Any(char.IsDigit))) continue;
                     // 不能取手机号的末 9/10 位，也不能取一个未结束的数字串前缀。
                     if (i > 0 && TryDigits(ordered[i - 1].Text, out _) && ordered[i].Layout.X - ordered[i - 1].Layout.Right < ordered[i].Layout.Height * .5) continue;
                     if (j + 1 < ordered.Count && TryDigits(ordered[j + 1].Text, out _) && ordered[j + 1].Layout.X - current.Layout.Right < current.Layout.Height * .5) continue;
                     var bounds = Box.Union(parts.Select(t => t.Layout));
-                    string near = NearbyText(rows, bounds, 90);
+                    var labels = rows.SelectMany(r=>Clusters(r.Tokens,35))
+                        .Where(g=>g.Any(t=>t.Source.Id!=parts[0].Source.Id || !TryDigits(t.Text,out _)))
+                        .Select(g=>(Text:string.Concat(g.Select(t=>t.Text)),Box:Box.Union(g.Select(t=>t.Layout))))
+                        .Where(g=>Distance(g.Box,bounds)<100 && g.Box.CenterY<=bounds.CenterY+25
+                            && (Math.Abs(g.Box.CenterX-bounds.CenterX)<Math.Max(150,bounds.Width) || Math.Abs(g.Box.CenterY-bounds.CenterY)<20));
+                    string near=string.Join(" ",labels.Select(g=>g.Text));
                     string sameRow = string.Concat(row.Tokens.Where(t => t.Layout.X >= bounds.X - 230 && t.Layout.X <= bounds.Right + 70).Select(t => t.Text));
-                    if (Regex.IsMatch(sameRow, @"电话|手机号码|联系电话|QQ|订单|工单|单号|版本", RegexOptions.IgnoreCase)) continue;
+                    if (Regex.IsMatch(sameRow, @"电话|手机号|联系电话|QQ|订单|工单|单号|版本|快捷键|历史连接|最近连接|连接记录", RegexOptions.IgnoreCase)) continue;
                     var app = BindSoftware(bounds, software);
-                    if (app == RemoteApp.ToDesk && value.Length != 9) continue;
+                    if (value.Length<9&&app!=RemoteApp.RustDesk)continue;
+                    if (app is RemoteApp.ToDesk or RemoteApp.UU && value.Length != 9) continue;
                     double score = 45;
                     var evidence = new List<string> { "有效长度的数字串" };
-                    if (Regex.IsMatch(near, "本机识别码|设备代码|识别码|设备码|账号|帐号")) { score += 28; evidence.Add("设备码标签邻近"); }
+                    if (Regex.IsMatch(near, "本机识别码|设备代码|识别码|设备码|设备ID|设备id|本机ID|本机id|您的ID|您的id|伙伴ID|伙伴id|此工作台|此桌面|一次性密码|账号|帐号")) { score += 28; evidence.Add("设备码标签邻近"); }
                     if (Regex.IsMatch(near, "本机识别码|允许控制本设备|此设备")) { score += 12; evidence.Add("客户本机区域"); }
                     if (Regex.IsMatch(near, "伙伴识别码|请输入设备|输入伙伴")) { score -= 18; evidence.Add("可能是历史输入框"); }
                     if (app != RemoteApp.Unknown) score += 8;
@@ -154,19 +174,35 @@ public sealed class RecognitionEngine
                 if (Regex.IsMatch(value, @"\d{9,}")) continue;
                 var bounds = Box.Union(run.Select(t => t.Layout));
                 double dy = Math.Abs(bounds.CenterY - code.ReadingBounds.CenterY);
-                if (dy > Math.Max(240, code.ReadingBounds.Height * 8)) continue;
+                if (dy > Math.Max(400, code.ReadingBounds.Height * 8)) continue;
                 var regionApp = BindSoftware(bounds, software);
                 if (code.App != RemoteApp.Unknown && regionApp != RemoteApp.Unknown && code.App != regionApp) continue;
                 // 标签区域不能横跨整行，否则旁边资源管理器文件名也会被误当成密码。
-                var pwdLabels = rows.SelectMany(r => Clusters(r.Tokens, 35))
-                    .Where(g => PwdTerms.Any(h => Flat(string.Concat(g.Select(t => t.Text))).Contains(h, StringComparison.OrdinalIgnoreCase)))
-                    .Select(g => Box.Union(g.Select(t => t.Layout))).ToList();
-                double labelDistance = pwdLabels.Select(label => Distance(label, bounds)).DefaultIfEmpty(double.MaxValue).Min();
-                bool anchored = labelDistance < 100;
+                var pwdLabels=rows.SelectMany(r=>Clusters(r.Tokens.Where(t=>Regex.IsMatch(t.Text,@"^[\p{IsCJKUnifiedIdeographs}]+$|^(?:verification|code|password|temporary|UU)$",RegexOptions.IgnoreCase)),15))
+                    .Where(g=>Regex.IsMatch(string.Concat(g.Select(t=>t.Text)),@"^(?:验证码|设备验证码|密码|临时密码|安全密码|访问密码|控制密码|安全代码|临时码|verificationcode|password|temporarypassword|UU密码|UU验证码)$",RegexOptions.IgnoreCase))
+                    .Select(g=>Box.Union(g.Select(t=>t.Layout))).ToArray();
+                bool MatchesLabel(Box label){
+                    double height=Math.Max(label.Height,bounds.Height);
+                    bool right=Math.Abs(label.CenterY-bounds.CenterY)<=height*.7
+                        &&bounds.X>=label.Right-height*.3&&bounds.X-label.Right<=height*8;
+                    bool below=bounds.Y>=label.Bottom-height*.2&&bounds.Y-label.Bottom<=height*3
+                        &&Math.Abs(bounds.X-label.X)<=height*2;
+                    return right||below;
+                }
+                double labelDistance=pwdLabels.Where(MatchesLabel).Select(label=>Distance(label,bounds)).DefaultIfEmpty(double.MaxValue).Min();
+                bool anchored=labelDistance<double.MaxValue;
                 bool mixed = value.Any(char.IsDigit) && value.Any(char.IsLetter);
                 bool numeric = value.All(char.IsDigit);
                 if (numeric && (value.Length is < 4 or > 8)) continue;
                 if (!mixed && !anchored) continue;
+                bool besideCode=Math.Abs(bounds.CenterY-code.ReadingBounds.CenterY)<=Math.Max(bounds.Height,code.ReadingBounds.Height)*.8
+                    &&bounds.X>=code.ReadingBounds.Right-3;
+                bool belowCode=bounds.Y>=code.ReadingBounds.Bottom-Math.Max(bounds.Height,code.ReadingBounds.Height)*.2
+                    &&bounds.Y-code.ReadingBounds.Bottom<=Math.Max(bounds.Height,code.ReadingBounds.Height)*4
+                    &&Math.Abs(bounds.X-code.ReadingBounds.X)<=Math.Max(60,code.ReadingBounds.Width*.5);
+                if(!anchored&&!besideCode&&!belowCode)continue;
+                // A helper title is interface chrome even when a small screenshot places it near a password label.
+                if(run.Any(t=>Regex.IsMatch(t.Source.Text,@"灰\s*Desk|GrayDesk",RegexOptions.IgnoreCase)))continue;
                 double score = 25 - dy * .12;
                 var evidence = new List<string>();
                 if (mixed) { score += 15; evidence.Add("字母数字混合串"); }

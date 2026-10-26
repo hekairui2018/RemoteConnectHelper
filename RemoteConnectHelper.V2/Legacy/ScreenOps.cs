@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -32,6 +32,8 @@ public static class ScreenOps
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
 
+    [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(PT point);
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr window,uint flags);
     private const uint WM_CLOSE = 0x0010;
 
     [StructLayout(LayoutKind.Sequential)] private struct RC { public int L, T, R, B; }
@@ -100,6 +102,8 @@ public static class ScreenOps
         if (chosen.H == IntPtr.Zero) chosen = vis.Where(c => c.W * c.Hh >= 40000).OrderByDescending(c => c.W * c.Hh).FirstOrDefault();
         if (chosen.H == IntPtr.Zero) chosen = Pick(cands, true);
         if (chosen.H == IntPtr.Zero) chosen = cands.Where(c => c.W * c.Hh >= 40000).OrderByDescending(c => c.W * c.Hh).FirstOrDefault();
+        // Minimized Flutter windows report a tiny/zero client size. Restore the matched main window before measuring.
+        if(chosen.H==IntPtr.Zero){var iconic=cands.FirstOrDefault(c=>c.Ico);if(iconic.H!=IntPtr.Zero){ShowWindow(iconic.H,9);Thread.Sleep(180);return ToWin(iconic.H);}}
         return chosen.H == IntPtr.Zero ? null : ToWin(chosen.H);
     }
 
@@ -182,12 +186,41 @@ public static class ScreenOps
     public static SD.Bitmap CaptureClient(Win win)
     {
         var bmp = new SD.Bitmap(win.W, win.H, SD.Imaging.PixelFormat.Format32bppArgb);
-        using (var g = SD.Graphics.FromImage(bmp))
-            g.CopyFromScreen(win.X, win.Y, 0, 0, new SD.Size(win.W, win.H), SD.CopyPixelOperation.SourceCopy);
+        // Flutter/Chromium PrintWindow can succeed with an old frame. Verify only live pixels.
+        if(GetForegroundWindow()!=win.Hwnd){bmp.Dispose();throw new InvalidOperationException("客户端未在前台，已停止读取旧画面");}
+        if(!IsClickTargetUncovered(win.Hwnd,win.X+win.W/2,win.Y+win.H/2)){bmp.Dispose();throw new InvalidOperationException("客户端被其它窗口遮挡，请移开遮挡后重试");}
+        using(var g=SD.Graphics.FromImage(bmp))g.CopyFromScreen(win.X,win.Y,0,0,new SD.Size(win.W,win.H),SD.CopyPixelOperation.SourceCopy);
         return bmp;
     }
 
     /// <summary>截主屏全屏（点连接后反馈可能在会话窗/弹窗，不能只看主窗客户区）。</summary>
+    public static SD.Bitmap? CaptureRemote(ConnectionContext? ctx,out int x,out int y)
+    {
+        x=y=0;if(ctx==null)return null;
+        var h=GetForegroundWindow();
+        if(h==IntPtr.Zero || ctx.PriorWindows.Contains(h)&&h!=ctx.MainWindow)return null;
+        GetWindowThreadProcessId(h,out uint id);
+        try
+        {
+            using var process=Process.GetProcessById((int)id);
+            string expected=ctx.Kind==RemoteAppKind.Sunlogin?"AweSun":"ToDesk";
+            if(!process.ProcessName.Equals(expected,StringComparison.OrdinalIgnoreCase))return null;
+            GetClientRect(h,out var rc);var origin=new PT();ClientToScreen(h,ref origin);
+            if(rc.R<=0||rc.B<=0||rc.R>8192||rc.B>8192)return null;
+            x=origin.X;y=origin.Y;
+            return CaptureClient(new Win{Hwnd=h,X=x,Y=y,W=rc.R,H=rc.B});
+        }catch{return null;}
+    }
+    public static void RequireForeground(ConnectionContext? ctx)
+    {
+        ctx?.ThrowIfCancellationRequested();if(ctx==null)return;
+        var h=GetForegroundWindow();if(h==IntPtr.Zero)throw new InvalidOperationException("远程软件未在前台，已停止填码");
+        GetWindowThreadProcessId(h,out uint id);
+        using var process=Process.GetProcessById((int)id);
+        string expected=ctx.Kind==RemoteAppKind.Sunlogin?"AweSun":"ToDesk";
+        if(!process.ProcessName.Equals(expected,StringComparison.OrdinalIgnoreCase) || ctx.PriorWindows.Contains(h)&&h!=ctx.MainWindow)
+            throw new InvalidOperationException("前台已切换，已停止填码以保护聊天输入");
+    }
     public static SD.Bitmap CaptureScreen()
     {
         var b = System.Windows.Forms.Screen.PrimaryScreen?.Bounds ?? new SD.Rectangle(0, 0, 1920, 1080);
@@ -213,12 +246,23 @@ public static class ScreenOps
 
     /// <summary>客户区坐标 -> 屏幕坐标并点击。</summary>
     public static void ClickClient(Win win, double cx, double cy, int settle = 160)
-        => InputSimulator.Click(win.X + (int)cx, win.Y + (int)cy, settle);
+    {
+        if(GetForegroundWindow()!=win.Hwnd)throw new InvalidOperationException("前台已切换，已停止点击");
+        ClickVerifiedScreen(win.Hwnd,win.X+(int)cx,win.Y+(int)cy,settle);
+    }
 
+    public static void ClickUnderForeground(ConnectionContext? ctx,int x,int y,int settle=120){RequireForeground(ctx);ClickVerifiedScreen(GetForegroundWindow(),x,y,settle);}
+    public static bool IsClickTargetUncovered(IntPtr expected,int x,int y)=>expected!=IntPtr.Zero&&GetAncestor(WindowFromPoint(new PT{X=x,Y=y}),2)==expected;
+    public static void ClickVerifiedScreen(IntPtr expected,int x,int y,int settle=120)
+    {
+        if(GetForegroundWindow()!=expected||!IsClickTargetUncovered(expected,x,y))
+            throw new InvalidOperationException("目标位置被其它窗口遮挡，已停止点击；请移开遮挡后重试");
+        InputSimulator.Click(x,y,settle);
+    }
     public static void Type(string text)
     {
         InputSimulator.ClearFocusedField();
-        InputSimulator.TypeText(text);
+        if(text.Length>0&&text.All(char.IsAsciiDigit))InputSimulator.TypeDigits(text);else InputSimulator.TypeText(text);
     }
 
     /// <summary>
@@ -340,6 +384,7 @@ public static class ScreenOps
         {
             int reside = 0;
             foreach (var pn in processNames) reside += Process.GetProcessesByName(pn).Length;
+            if(reside>0)return null; // A running client may own hidden sessions; never restart it.
             Logger.Info($"Ensure 未找到现存主窗（{string.Join("/", processNames)}，驻留进程 {reside} 个），开始启动/唤起");
             foreach (var exe in exePaths)
                 if (!string.IsNullOrEmpty(exe) && File.Exists(exe))
@@ -394,31 +439,7 @@ public static class ScreenOps
                     break;
                 }
         }
-        // 托盘驻留、二次启动仍唤不出主窗（部分版本托盘态会销毁主窗，单实例再启动不负责显示）：
-        // 结束该软件残留进程后全新启动——等价于手动"退出托盘再打开"。仅在找不到窗的异常路径触发，正常路径不受影响。
-        if (win == null)
-        {
-            var resident = new List<Process>();
-            foreach (var pn in processNames) resident.AddRange(Process.GetProcessesByName(pn));
-            if (resident.Count > 0)
-            {
-                Logger.Warn($"进程已驻留但无主窗（{string.Join("/", processNames)}，{resident.Count}个进程），结束残留后重新启动");
-                foreach (var pr in resident)
-                {
-                    try { pr.Kill(entireProcessTree: true); }
-                    catch { try { pr.Kill(); } catch { } }
-                }
-                Wait(ctx, 700);
-                foreach (var exe in exePaths)
-                    if (!string.IsNullOrEmpty(exe) && File.Exists(exe))
-                    {
-                        win = Launch(exe, processNames, classContains, classExclude, ctx);
-                        if (win != null) break;
-                    }
-                if (win != null) Logger.Info("结束残留进程后重新启动，主窗已出现");
-                else Logger.Warn("结束残留进程并重启后仍无主窗（可能以管理员/服务模式运行致普通权限无法操作，或未安装）");
-            }
-        }
+        // Never terminate resident clients: they may own an existing customer session.
         if (win == null)
         {
             int now = 0;
@@ -426,7 +447,7 @@ public static class ScreenOps
             Logger.Warn($"Ensure 放弃：仍无主窗（{string.Join("/", processNames)}，进程 {now} 个，exe={string.Join("|", exePaths.Where(static p => !string.IsNullOrEmpty(p)))}）");
             return null;
         }
-        try { MinimizeProcesses(otherProcesses); } catch { }
+        // Other clients and existing sessions are left alone.
         return win;
     }
 

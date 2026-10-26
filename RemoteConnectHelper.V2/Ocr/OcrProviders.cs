@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Windows.Media.Imaging;
 using RapidOcrNet;
 using RemoteConnectHelper.V2.Domain;
@@ -29,6 +29,45 @@ public sealed class RapidOcrProvider : IOcrProvider
         catch { engine.Dispose(); throw; }
     });
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Lazy<TextClassifier> _direction = new(() => {
+        var classifier=new TextClassifier();
+        try { classifier.InitModel(Path.Combine(AppContext.BaseDirectory,"models/v5/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx"),2);return classifier; }
+        catch {classifier.Dispose();throw;}
+    });
+    private string? _directionKey;
+    private int _directionRotation;
+    public async Task<int> DetectOrientationAsync(byte[] image,CancellationToken token)
+    {
+        string key=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(image));
+        await _gate.WaitAsync(token);
+        try {
+            if(key==_directionKey)return _directionRotation;
+            int rotation=await Task.Run(()=>{
+                using var bitmap=SKBitmap.Decode(image)??throw new InvalidDataException("图片无法解码");
+                if((long)bitmap.Width*bitmap.Height>50_000_000)return 0;
+                // Detection only: neither Detect nor the recognizer is called here.
+                var boxes=_engine.Value.DetectBoxes(bitmap,RapidOcrOptions.Default with{ImgResize=1600,MaxSideLen=2400},token);
+                var votes=new List<(int Rotation,double Confidence)>();
+                foreach(var box in boxes.OrderByDescending(b=>b.BoxPoints.Max(p=>p.X)-b.BoxPoints.Min(p=>p.X)
+                    +b.BoxPoints.Max(p=>p.Y)-b.BoxPoints.Min(p=>p.Y)).Take(16)) {
+                    token.ThrowIfCancellationRequested();
+                    using var crop=PreviewOrientation.Crop(bitmap,box.BoxPoints);
+                    bool tall=crop.Height>crop.Width*1.6;
+                    if(!tall&&crop.Width<crop.Height*1.6)continue;
+                    using var horizontal=new SKBitmap(tall?crop.Height:crop.Width,tall?crop.Width:crop.Height);
+                    using(var canvas=new SKCanvas(horizontal)) {
+                        canvas.Clear(SKColors.White);
+                        if(tall){canvas.Translate(crop.Height,0);canvas.RotateDegrees(90);}
+                        canvas.DrawBitmap(crop,0,0);
+                    }
+                    var angle=_direction.Value.GetAngle(horizontal,true,token);
+                    votes.Add(((tall?90:0)+(angle.Index==1?180:0),angle.Score));
+                }
+                return PreviewOrientation.Choose(votes);
+            },token);
+            token.ThrowIfCancellationRequested();_directionKey=key;_directionRotation=rotation;return rotation;
+        } finally {_gate.Release();}
+    }
     public string Name => "RapidOCR · PP-OCRv5 中文";
     public async Task<OcrDocument> ReadAsync(byte[] image, int rotation, bool contrast, CancellationToken cancellationToken)
     {
@@ -66,7 +105,7 @@ public sealed class RapidOcrProvider : IOcrProvider
         }
         finally { _gate.Release(); }
     }
-    public void Dispose() { if (_engine.IsValueCreated) _engine.Value.Dispose(); _gate.Dispose(); }
+    public void Dispose() { if (_engine.IsValueCreated) _engine.Value.Dispose(); if(_direction.IsValueCreated)_direction.Value.Dispose(); _gate.Dispose(); }
 }
 
 public sealed class WindowsOcrProvider : IOcrProvider

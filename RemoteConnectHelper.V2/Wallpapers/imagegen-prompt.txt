@@ -1,0 +1,5 @@
+Mode: built-in image_gen (no CLI/API fallback).
+
+Use case: stylized-concept. Create one elegant illustrated wallpaper background plate for a Windows utility app, landscape 16:9 composition. Soft pale blush pink cherry blossom branches frame the upper left and upper right corners and a few blossoms around outer edges; spacious quiet misty pastel cream and very pale rose center, subtle airy spring atmosphere, gently luminous, refined Japanese watercolor feeling. No people, no lettering, no UI, no text, no logos, no watermark. Keep the center uncluttered and low contrast so software controls can remain readable above it. This is a stationary background plate for a later falling-petals animation; do not fill the middle with frozen petals.
+
+Animation: locally composed falling petal frames, 1920x1080, 72 frames at 80ms, infinite loop; deterministic seed 3060.

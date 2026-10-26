@@ -112,7 +112,8 @@ public static class AppPaths
         return null;
     }
 
-    public static string? FindSunlogin()
+    public static string? FindSunlogin() => RemoteConnectHelper.V2.Discovery.RemoteSoftwareDiscovery.Find("sunlogin")?.Path;
+    private static string? FindSunloginLegacy()
     {
         var reg = FindByDisplayName(new[] { "向日葵", "Sunlogin" }, "AweSun.exe");
         string[] common =
@@ -125,7 +126,8 @@ public static class AppPaths
         return Pick(reg, "AweSun.exe", common);
     }
 
-    public static string? FindToDesk()
+    public static string? FindToDesk() => RemoteConnectHelper.V2.Discovery.RemoteSoftwareDiscovery.Find("todesk")?.Path;
+    private static string? FindToDeskLegacy()
     {
         var reg = FindByDisplayName(new[] { "ToDesk" }, "ToDesk.exe");
         string[] common =

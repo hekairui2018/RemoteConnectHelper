@@ -23,3 +23,6 @@ selftest_out/
 
 # 二代模型由下载脚本校验后安装，识别明细及凭据留在被忽略的 obj 目录。
 /RemoteConnectHelper.V2/Models/*.onnx
+
+# Runtime OCR model files are delivered in the installer, not source control.
+/RemoteConnectHelper.V2/Models/**/*.onnx

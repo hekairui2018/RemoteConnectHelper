@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Windows;
 
 namespace RemoteConnectHelper.Automation;
@@ -146,6 +146,12 @@ public static class InputSimulator
     }
 
     /// <summary>原样输入 UTF-16 字符，不走键盘布局或输入法，也无需对密码特殊字符转义。</summary>
+    public static void TypeDigits(string text)
+    {
+        if(!text.All(char.IsAsciiDigit))throw new ArgumentException("只接受数字");
+        foreach(char digit in text){Send(new[]{Key(digit),Key(digit,KEYEVENTF_KEYUP)});Thread.Sleep(12);}
+        Thread.Sleep(120);
+    }
     public static void TypeText(string text)
     {
         if (string.IsNullOrEmpty(text)) return;

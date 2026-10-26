@@ -30,6 +30,7 @@ public partial class ShellWindow : Window
     private bool _updating;
     private Window? _preview;
     private long _sourceRevision;
+    private long _desktopSession=-1;
     private DeviceCodeCandidate? _markedCode;
     private PasswordCandidate? _markedPassword;
     public event Action? BallRequested;
@@ -57,6 +58,13 @@ public partial class ShellWindow : Window
     }
     private void UpdateState()
     {
+        if(_desktopSession!=_controller.SessionId || (_controller.Stage==AssistantStage.Launched && _controller.Result==null))
+        {
+            _desktopSession=_controller.SessionId;_displayed=null;_displayedImage=null;
+            _updating=true;AppBox.SelectedIndex=0;CodeBox.Clear();PasswordBox.Clear();_updating=false;
+            SourceImage.Source=null;CodeCandidates.Children.Clear();PasswordCandidates.Children.Clear();Overlay.Children.Clear();DetailsText.Clear();
+            _preview?.Close();
+        }
         if (_controller.Image is { } bytes && !ReferenceEquals(bytes, _displayedImage))
         {
             _displayedImage = bytes;

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -16,6 +16,26 @@ public static class CommandLine
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         try
         {
+            if(args is ["--ocr-worker",var owner]&&int.TryParse(owner,out int parentPid)&&parentPid>0)return OcrWorker.Run(parentPid:parentPid);
+            if(args is ["--ocr-worker"])return OcrWorker.Run();
+            if(args is ["--ocr-worker-test-exit"])return OcrWorker.Run("exit");
+            if(args is ["--ocr-worker-test-hang"])return OcrWorker.Run("hang");
+            if(args is ["--verify-connection-status",var statusOutput])return ConnectionStateTests.Run(statusOutput);
+            if(args is ["--verify-explicit-connect",var explicitOutput])return ExplicitConnectTests.Run(explicitOutput);
+            if(args is ["--verify-ocr-isolation",var isolationOutput])return OcrIsolationTests.RunAsync(isolationOutput).GetAwaiter().GetResult();
+            if (args is ["--verify-independent-blocks",var blocksOutput]) return IndependentBlocksTests.Run(blocksOutput);
+            if (args is ["--verify-software-ui",var softwareOutput]) return DesktopInteractionTests.RunSoftware(softwareOutput);
+            if (args is ["--verify-theme",var themeOutput]) return DesktopInteractionTests.RunTheme(themeOutput);
+            if (args is ["--verify-help-ui",var helpOutput]) return DesktopInteractionTests.RunHelp(helpOutput);
+            if (args is ["--verify-file-picker",var pickerOutput]) return FilePickerTests.Run(pickerOutput);
+            if (args is ["--desktop-test", var desktopOutput]) return DesktopInteractionTests.Run(desktopOutput);
+            if (args is ["--desktop-test", var testOutput, var baselineV1]) return DesktopInteractionTests.Run(testOutput,baselineV1);
+            if (args is ["--verify-desktop-state"]) return DesktopStateTests.RunAsync().GetAwaiter().GetResult();
+            if (args is ["--desktop-demo"]) return DesktopDemo.Run();
+            if (args is ["--verify-clipboard", var clipboardReport]) return ClipboardReadOnlyTest.Run(clipboardReport);
+            if (args is ["--discover", var discoveryReport]) {File.WriteAllText(discoveryReport,JsonSerializer.Serialize(Discovery.RemoteSoftwareDiscovery.Discover(),new JsonSerializerOptions{WriteIndented=true}));return 0;}
+            if (args is ["--verify-orientation",var orientationOutput]) return OrientationTests.RunAsync(orientationOutput).GetAwaiter().GetResult();
+            if (args is ["--verify-graydesk"]) return GrayDeskTests.RunAsync().GetAwaiter().GetResult();
             if (args is ["--verify"]) return RegressionSuite.RunAsync().GetAwaiter().GetResult();
             if (args is ["--selftest", var image])
             {

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -8,13 +8,15 @@ using SD = System.Drawing;
 
 namespace RemoteConnectHelper.Automation;
 
-public enum ConnectStatus { Launched, NeedPassword, Failed, Cancelled }
+public enum ConnectStatus { Launched, NeedPassword, Failed, Cancelled, Confirmed, Uncertain, Connecting }
 
 public sealed class ConnectResult
 {
     public ConnectStatus Status { get; init; }
     public string Message { get; init; } = "";
     public static ConnectResult Ok(string msg = "已发起连接") => new() { Status = ConnectStatus.Launched, Message = msg };
+    public static ConnectResult Confirm(string msg = "已确认连接成功") => new() { Status = ConnectStatus.Confirmed, Message = msg };
+    public static ConnectResult Unknown(string msg = "尚未确认连接，请检查远程软件；可修改后重试") => new() { Status = ConnectStatus.Uncertain, Message = msg };
     public static ConnectResult NeedPwd(string msg) => new() { Status = ConnectStatus.NeedPassword, Message = msg };
     public static ConnectResult Fail(string msg) => new() { Status = ConnectStatus.Failed, Message = msg };
     public static ConnectResult Cancel(string msg = "已取消") => new() { Status = ConnectStatus.Cancelled, Message = msg };
@@ -150,16 +152,30 @@ internal static class CoordOps
     public static void ClickField(ScreenOps.Win win, double cx, double cy, ConnectionContext? ctx = null, bool slow = false)
     {
         ctx?.ThrowIfCancellationRequested();
+        ScreenOps.RequireForeground(ctx);
         ScreenOps.ClickClient(win, cx, cy, slow ? 160 : 80);
         ConnWait.Sleep(ctx, slow ? 620 : 380);
         ctx?.ThrowIfCancellationRequested();
     }
 
+    public static bool VerifyCode(ScreenOps.Win win,string code,double x,double y)
+    {
+        if(!ScreenOps.IsClickTargetUncovered(win.Hwnd,win.X+(int)x,win.Y+(int)y))return false;
+        // Blur on the already-located field heading so the caret cannot mask the final digit.
+        if(y>50&&ScreenOps.IsClickTargetUncovered(win.Hwnd,win.X+(int)x,win.Y+(int)y-44)){
+            ScreenOps.ClickClient(win,x,y-44,120);
+        }
+        using var image=ScreenOps.CaptureClient(win);var doc=ScreenOps.OcrAsync(image).GetAwaiter().GetResult();
+        if(doc==null)return false;
+        return OcrGeo.BuildLines(doc).Where(l=>Math.Abs(l.Y-y)<32).Any(l=>System.Text.RegularExpressions.Regex.Replace(string.Concat(l.Words.Where(w=>Math.Abs(w.CenterX-x)<160).Select(w=>w.Text)),@"[\s-]","").Contains(code,StringComparison.Ordinal));
+    }
     public static void Fill(ScreenOps.Win win, double cx, double cy, string text,
                             ConnectionContext? ctx = null, bool slow = false)
     {
         ClickField(win, cx, cy, ctx, slow);
-        ScreenOps.Type(text);
+        ScreenOps.RequireForeground(ctx);
+        ctx?.ThrowIfCancellationRequested();
+        ScreenOps.RequireForeground(ctx);ScreenOps.Type(text);
         ConnWait.Sleep(ctx, slow ? 180 : 100);
     }
 }
@@ -189,8 +205,9 @@ public sealed class SunloginConnector : IRemoteConnector
         if (win == null)
         {
             Logger.Warn("向日葵 Ensure 未返回主窗口，连接中止（详见上方 启动/驻留/重启 日志）");
-            return ConnectResult.Fail("没找到向日葵主窗口，请确认已安装（AweSun.exe）；若向日葵缩在托盘仍失败，请完全退出向日葵后重试");
+            return ConnectResult.Fail("未找到向日葵主窗口，请从客户端托盘打开主界面后重试；已有会话保持不变");
         }
+        if(ctx!=null)ctx.MainWindow=win.Hwnd;
         if (!ScreenOps.EnsureForeground(win, ctx))
             return ConnectResult.Fail("没法把向日葵调到最前（可能被弹窗挡住），为避免连错已取消，请手动切到向日葵再试");
 
@@ -202,7 +219,7 @@ public sealed class SunloginConnector : IRemoteConnector
             var doc = readyDoc;
             if (!ready || doc == null) return ConnectResult.Fail("向日葵主界面未加载，已取消自动连接（请手动打开软件后重试）");
             var lines = OcrGeo.BuildLines(doc);
-            var title = OcrGeo.FindLineContains(lines, "远程协助他人", "协助他人");
+            var title = OcrGeo.FindLineContains(lines, "远程协助他人", "协助他人", "远程控制设备");
             double titleY = title?.Y ?? win.H * 0.39;
             rowY = titleY + 63;                        // 输入框在标题下方约 63px
             const double tol = 34;
@@ -222,6 +239,10 @@ public sealed class SunloginConnector : IRemoteConnector
             Logger.Info($"向日葵 定位 设备码@({codeCx:F0},{codeCy:F0}) 验证码框={(havePwdBox ? $"({pwdCx:F0},{pwdCy:F0})" : "无")}");
 
             FillCredentials(win, codeCx, codeCy, pwdCx, pwdCy, deviceCode, password, ctx);
+            if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy)){
+                FillCredentials(win,codeCx,codeCy,pwdCx,pwdCy,deviceCode,password,ctx,slow:true);
+                if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy))return ConnectResult.Fail("向日葵设备码填入后核对不一致，已停止连接，请检查输入框");
+            }
         }
 
         // 填完码后连接按钮才由禁用灰变亮蓝，重新截图定位；找不到亮蓝（疑似丢键）就慢速重填一次
@@ -273,7 +294,7 @@ public sealed class SunloginConnector : IRemoteConnector
         var d2 = ScreenOps.OcrAsync(b2).GetAwaiter().GetResult();
         if (d2 != null)
         {
-            var t = OcrGeo.FindLineContains(OcrGeo.BuildLines(d2), "远程协助他人", "协助他人");
+            var t = OcrGeo.FindLineContains(OcrGeo.BuildLines(d2), "远程协助他人", "协助他人", "远程控制设备");
             if (t != null) gy = t.Y + 63;
         }
         var btn2 = ScreenOps.FindBlueButton(b2, (int)(win.W * 0.55), (int)(gy - 36), win.W, (int)(gy + 40));
@@ -283,55 +304,10 @@ public sealed class SunloginConnector : IRemoteConnector
 
     private ConnectResult PostConnect(ConnectionContext? ctx)
     {
-        // 轮询：错误词/验证码优先（首轮即 OCR）；会话窗需连续两次探到（防抖，避免残留窗秒判）；可取消。
-        const int budget = 6000, step = 300, ocrEvery = 700;
-        int elapsed = 0, sinceOcr = ocrEvery;
-        bool sessionSeen = false;
-        while (elapsed < budget)
-        {
-            ctx?.ThrowIfCancellationRequested();
-
-            if (sinceOcr >= ocrEvery)
-            {
-                sinceOcr = 0;
-                using var full = ScreenOps.CaptureScreen();
-                var doc = ScreenOps.OcrAsync(full).GetAwaiter().GetResult();
-                if (doc != null)
-                {
-                    var lines = OcrGeo.BuildLines(doc);
-                    var errLine = lines.FirstOrDefault(l => Errors.Any(e => l.Text.Contains(e)));
-                    if (errLine != null)
-                    {
-                        Logger.Warn("向日葵连接返回错误：" + errLine.Text);
-                        return ConnectResult.Fail(errLine.Text.Length > 24 ? "向日葵返回：" + errLine.Text : errLine.Text);
-                    }
-                    if (OcrGeo.ContainsAny(doc, "请输入验证码", "输入验证码", "安全验证"))
-                        return ConnectResult.NeedPwd("对方要求验证码，截图里没给，请在向日葵里手动输入");
-                }
-            }
-
-            if (ScreenOps.FindWindow(Procs, new[] { "FlutterMultiWindow" }, Array.Empty<string>()) != null)
-            {
-                if (sessionSeen) return ConnectResult.Ok("正在连接对方（已打开向日葵会话窗）");
-                sessionSeen = true;
-            }
-            else sessionSeen = false;
-
-            if (!ConnWait.Sleep(ctx, step)) break;
-            elapsed += step; sinceOcr += step;
-        }
-
-        // 预算耗尽仍无会话窗：末次全屏 OCR 判定，无错误则按"已发起"处理
-        using var last = ScreenOps.CaptureScreen();
-        var lastDoc = ScreenOps.OcrAsync(last).GetAwaiter().GetResult();
-        if (lastDoc == null) return ConnectResult.Ok("已发起向日葵连接");
-        var lastErr = OcrGeo.BuildLines(lastDoc).FirstOrDefault(l => Errors.Any(e => l.Text.Contains(e)));
-        if (lastErr != null)
-            return ConnectResult.Fail(lastErr.Text.Length > 24 ? "向日葵返回：" + lastErr.Text : lastErr.Text);
-        if (OcrGeo.ContainsAny(lastDoc, "请输入验证码", "输入验证码", "安全验证"))
-            return ConnectResult.NeedPwd("对方要求验证码，截图里没给，请在向日葵里手动输入");
-        return ConnectResult.Ok("已发起向日葵连接");
+        ctx?.ThrowIfCancellationRequested();
+        return ConnectResult.Ok("已发起向日葵连接，正在核实会话状态");
     }
+
 }
 
 /* ============================ ToDesk（浅色，两步） ============================ */
@@ -367,8 +343,9 @@ public sealed class ToDeskConnector : IRemoteConnector
         if (win == null)
         {
             Logger.Warn("ToDesk Ensure 未返回主窗口，连接中止（详见上方 启动/驻留/重启 日志）");
-            return ConnectResult.Fail("没找到 ToDesk 主窗口，请确认已安装（ToDesk.exe）；若 ToDesk 缩在托盘仍失败，请完全退出后重试");
+            return ConnectResult.Fail("未找到 ToDesk 主窗口，请从客户端托盘打开主界面后重试；已有会话保持不变");
         }
+        if(ctx!=null)ctx.MainWindow=win.Hwnd;
         if (!ScreenOps.EnsureForeground(win, ctx))
             return ConnectResult.Fail("没法把 ToDesk 调到最前（可能被弹窗挡住），为避免连错已取消，请手动切到 ToDesk 再试");
 
@@ -392,7 +369,11 @@ public sealed class ToDeskConnector : IRemoteConnector
 
             Logger.Info($"ToDesk 定位 设备码@({codeCx:F0},{codeCy:F0})");
             CoordOps.Fill(win, codeCx, codeCy, deviceCode, ctx);
-            Logger.Info($"ToDesk 填入设备码 {deviceCode}");
+            if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy)){
+                CoordOps.Fill(win,codeCx,codeCy,deviceCode,ctx,slow:true);
+                if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy))return ConnectResult.Fail("ToDesk设备码填入后核对不一致，已停止连接，请检查输入框");
+            }
+            Logger.Info("ToDesk设备码已填入并回读核对");
         }
 
         ConnWait.Sleep(ctx, 120);
@@ -455,21 +436,16 @@ public sealed class ToDeskConnector : IRemoteConnector
         while (elapsed < budget)
         {
             ctx?.ThrowIfCancellationRequested();
-            using var full = ScreenOps.CaptureScreen();
+            using var full = ScreenOps.CaptureRemote(ctx,out int offsetX,out int offsetY);
+            if(full==null)return ConnectResult.Ok("已发起连接，前台已切换；将只读核实会话");
             var doc = ScreenOps.OcrAsync(full).GetAwaiter().GetResult();
+            if(doc!=null)foreach(var word in doc.Words){word.X+=offsetX;word.Y+=offsetY;}
             if (doc != null)
             {
                 var lines = OcrGeo.BuildLines(doc);
                 var errLine = lines.FirstOrDefault(l => Errors.Any(e => l.Text.Contains(e)));
                 if (errLine != null)
                 {
-                    // 顺手点掉错误框的"确定/知道了/关闭"
-                    var ok = OcrGeo.FindLineContains(lines, "确定", "知道了", "关闭");
-                    if (ok != null)
-                    {
-                        var w = ok.Words.FirstOrDefault(x => x.Text.Contains("确") || x.Text.Contains("知") || x.Text.Contains("关"));
-                        if (w != null) { InputSimulator.Click((int)w.CenterX, (int)w.CenterY, 200); ConnWait.Sleep(ctx, 200); }
-                    }
                     Logger.Warn("ToDesk 连接返回错误：" + errLine.Text);
                     bool isPwdErr = errLine.Text.Contains("密码") || errLine.Text.Contains("验证码")
                                     || errLine.Text.Contains("验证") || errLine.Text.Contains("解锁")
@@ -510,11 +486,14 @@ public sealed class ToDeskConnector : IRemoteConnector
 
                         string nb = nowBtn.HasValue ? $"({nowBtn.Value.Cx:F0},{nowBtn.Value.Cy:F0})" : "(未定位)";
                         Logger.Info($"ToDesk 密码弹窗 填框@({cx:F0},{cy:F0}) 立即连接@{nb}");
-                        InputSimulator.Click((int)cx, (int)cy, 120); // 点密码框聚焦
+                        ScreenOps.RequireForeground(ctx);
+                        ScreenOps.ClickUnderForeground(ctx,(int)cx,(int)cy,120); // 点密码框聚焦
                         ConnWait.Sleep(ctx, 380);
+                        ScreenOps.RequireForeground(ctx);
                         ScreenOps.Type(password);
                         ConnWait.Sleep(ctx, 150);
-                        if (nowBtn.HasValue) InputSimulator.Click((int)nowBtn.Value.Cx, (int)nowBtn.Value.Cy, 220);
+                        ScreenOps.RequireForeground(ctx);
+                        if (nowBtn.HasValue) ScreenOps.ClickUnderForeground(ctx,(int)nowBtn.Value.Cx,(int)nowBtn.Value.Cy,220);
                         pwdFilled = true;
                         actedAt = elapsed;
                         budget = Math.Max(budget, elapsed + 6000); // 填完再给 6s 等进会话/报错
@@ -525,7 +504,8 @@ public sealed class ToDeskConnector : IRemoteConnector
                         // 没识别到密码：对方若允许免密，点弹窗“免密连接”直连
                         if (freeBtn.HasValue)
                         {
-                            InputSimulator.Click((int)freeBtn.Value.Cx, (int)freeBtn.Value.Cy, 220);
+                            ScreenOps.RequireForeground(ctx);
+                            ScreenOps.ClickUnderForeground(ctx,(int)freeBtn.Value.Cx,(int)freeBtn.Value.Cy,220);
                             freeClicked = true;
                             actedAt = elapsed;
                             budget = Math.Max(budget, elapsed + 5000);
@@ -557,8 +537,8 @@ public sealed class ToDeskConnector : IRemoteConnector
         }
 
         // 预算耗尽：弹窗仍在=没进去，交人工；弹窗已没=按已发起处理
-        using var last = ScreenOps.CaptureScreen();
-        var lastDoc = ScreenOps.OcrAsync(last).GetAwaiter().GetResult();
+        using var last = ScreenOps.CaptureRemote(ctx,out _,out _);
+        var lastDoc = last==null?null:ScreenOps.OcrAsync(last).GetAwaiter().GetResult();
         if (lastDoc != null && OcrGeo.ContainsAny(lastDoc, PwdDialogHints)) return NeedPwdManual(password);
         return ConnectResult.Ok("已发起 ToDesk 连接");
     }
@@ -566,7 +546,7 @@ public sealed class ToDeskConnector : IRemoteConnector
     private static ConnectResult NeedPwdManual(string password)
         => string.IsNullOrEmpty(password)
             ? ConnectResult.NeedPwd("对方需要密码，请在弹出的卡片里填写后重连")
-            : ConnectResult.NeedPwd("密码可能不对，已在卡片预填 " + password + "，核对后点连接重连");
+            : ConnectResult.NeedPwd("验证码可能不正确，请在卡片核对后重试");
 
     /// <summary>在包含 key 的那一行上取 key 文字簇中心（全屏物理坐标，用于点弹窗按钮）。</summary>
     private static (double Cx, double Cy)? ClusterOnLine(OcrDoc doc, List<OcrGeo.Line> lines, string key)

@@ -5,7 +5,7 @@ namespace RemoteConnectHelper.V2.Infrastructure
     public static class Log
     {
         private static readonly object Gate = new();
-        public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RemoteConnectHelperV2");
+        public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GrayDeskV2");
         public static string FilePath => Path.Combine(Root, "logs", $"helper-{DateTime.Now:yyyyMMdd}.log");
         public static void Write(string message)
         {

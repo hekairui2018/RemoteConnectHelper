@@ -15,7 +15,7 @@ public class ClipboardListenerWindow : Window
     private const int WmClipboardUpdate = 0x031D;
     // 1300ms：刻意延后到客服截图后“立刻 Ctrl+V 粘贴”的高峰之后再读剪贴板，
     // 配合 Win32 毫秒级快取，最大限度避免与粘贴动作抢剪贴板锁。
-    private const int DebounceMs = 1300;
+    private const int DebounceMs = 250;
 
     private readonly DispatcherTimer _debounce;
     private IntPtr _hwnd = IntPtr.Zero;

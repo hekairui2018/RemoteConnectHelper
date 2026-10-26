@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using RemoteConnectHelper.V2.Domain;
 using RemoteConnectHelper.V2.Parsing;
 
@@ -13,10 +13,13 @@ public sealed class RecognitionPipeline : IDisposable
     private RecognitionResult? _cached;
     private readonly SemaphoreSlim _gate = new(1, 1);
     public RecognitionPipeline(IOcrProvider? primary = null, IOcrProvider? fallback = null)
-    { _primary = primary ?? new RapidOcrProvider(); _fallback = fallback ?? new WindowsOcrProvider(); }
+    { _primary = primary ?? new IsolatedRapidOcrProvider(); _fallback = fallback ?? new WindowsOcrProvider(); }
+
+    public Task<int> DetectOrientationAsync(byte[] image,CancellationToken token)
+        => _primary switch{IsolatedRapidOcrProvider isolated=>isolated.DetectOrientationAsync(image,token),RapidOcrProvider rapid=>rapid.DetectOrientationAsync(image,token),_=>Task.FromResult(0)};
 
     public async Task<RecognitionResult> AnalyzeAsync(byte[] image, CancellationToken cancellationToken,
-        Action<string>? progress = null)
+        Action<string>? progress = null, bool remoteOnly = false)
     {
         string key = Convert.ToHexString(SHA256.HashData(image));
         await _gate.WaitAsync(cancellationToken);
@@ -33,6 +36,8 @@ public sealed class RecognitionPipeline : IDisposable
                 {
                     var result = _parser.Analyze(await _primary.ReadAsync(image, rotation, false, cancellationToken));
                     attempts.Add(result);
+                    if(remoteOnly && rotation==0 && !LooksRemote(result))
+                        return result with{Decision=ConnectionDecision.Manual,Reason="未发现明确远程连接内容"};
                     if (result.SelectedCode != null && result.App != RemoteApp.Unknown) break;
                 }
                 catch (OperationCanceledException) { throw; }
@@ -109,6 +114,15 @@ public sealed class RecognitionPipeline : IDisposable
         // 不跨 OCR 按规则分数覆盖原始识别。优先有软件依据的结果，再保持尝试顺序。
         // 即使选择了较完整的结果，后面的矛盾检查仍会强制人工确认。
         => results.OrderByDescending(r => r.SelectedCode == null ? 0 : r.App == RemoteApp.Unknown ? 1 : 2).FirstOrDefault();
+    public static bool LooksRemote(RecognitionResult result)
+    {
+        string words=string.Concat(result.Document.Blocks.Select(b=>b.Text));
+        bool brand=System.Text.RegularExpressions.Regex.IsMatch(words,@"向日葵|Sunlogin|AweSun|(?<![a-z])ToDesk(?![a-z])",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        bool label=System.Text.RegularExpressions.Regex.IsMatch(words,@"本机识别码|设备代码|设备码|识别码|验证码|临时密码");
+        return result.SelectedCode!=null && result.App!=RemoteApp.Unknown
+            || result.SelectedCode!=null && brand
+            || brand && label;
+    }
     private static bool Overlaps(Box a, Box b) => a.X < b.Right && b.X < a.Right && a.Y < b.Bottom && b.Y < a.Bottom;
     private static bool IsUnlabelledRotationBackground(RecognitionResult other, RecognitionResult selected)
         => other.SelectedCode != null && selected.SelectedCode != null

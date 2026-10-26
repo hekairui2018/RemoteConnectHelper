@@ -10,6 +10,8 @@ namespace RemoteConnectHelper.Automation;
 public sealed class ConnectionContext
 {
     public RemoteAppKind Kind { get; }
+    public IntPtr MainWindow { get; set; }
+    public HashSet<IntPtr> PriorWindows { get; set; } = new();
     public CancellationTokenSource Cts { get; } = new();
     public CancellationToken Token => Cts.Token;
 
