@@ -16,6 +16,8 @@ public static class CommandLine
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         try
         {
+            if(args is ["--probe-live-input",var client,var probeOutput])return LiveInputProbe.Run(client,probeOutput);
+            if(args is ["--verify-window-readback",var readbackOutput])return WindowCodeTests.Run(readbackOutput);
             if(args is ["--ocr-worker",var owner]&&int.TryParse(owner,out int parentPid)&&parentPid>0)return OcrWorker.Run(parentPid:parentPid);
             if(args is ["--ocr-worker"])return OcrWorker.Run();
             if(args is ["--ocr-worker-test-exit"])return OcrWorker.Run("exit");

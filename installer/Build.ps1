@@ -1,13 +1,13 @@
 ﻿param(
-    [string]$Payload = 'E:\开发产物\灰DeskV2\2.2.0-test.20261021.20\程序',
+    [string]$Payload = 'E:\开发产物\灰DeskV2\2.2.0-test.20261027.21\程序',
     [string]$OutputDirectory = "$PSScriptRoot\obj"
 )
 $ErrorActionPreference = 'Stop'
-$version = '2.2.0-test.20261021.20'
-$expectedExe = '6DA45D8D1F656C0E36BE7A393A735C8EF6FE31E20110F2CF60AEC9371F32498E'
+$version = '2.2.0-test.20261027.21'
+$expectedExe = '450D10622CF568977D755B3EDD25D593FC1B0D0B9EBB2B377C674F64E34D4AA9'
 $compiler = Join-Path $PSScriptRoot 'tools\nsis-3.13\makensis.exe'
 if (!(Test-Path -LiteralPath $compiler)) { throw 'Install the official NSIS 3.13 portable package under installer\tools first. See README.md.' }
-if ((Get-FileHash -LiteralPath (Join-Path $Payload '灰Desk.exe') -Algorithm SHA256).Hash -ne $expectedExe) { throw 'Payload differs from verified .20 release' }
+if ((Get-FileHash -LiteralPath (Join-Path $Payload '灰Desk.exe') -Algorithm SHA256).Hash -ne $expectedExe) { throw 'Payload differs from verified .20261027.21 release' }
 New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'obj') -Force | Out-Null
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $payloadRoot = (Resolve-Path -LiteralPath $Payload).Path.TrimEnd('\')
@@ -32,7 +32,7 @@ $record = [ordered]@{
     InstallerSHA256=(Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
     InstallerBytes=(Get-Item -LiteralPath $output).Length
     PayloadExeSHA256=$expectedExe
-    BaseCommit='ebfe4be9e91d8e20d20e9bfafa8032efa8f9e77a';NewCommit=$null
+    BaseCommit='6569b2acdd980a6077ff4d3c6436a87b49c6e993';NewCommit=$null
     Tool='NSIS 3.13';ToolURL='https://nsis.sourceforge.io/Download'
     ToolZipSHA256='BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8'
     InstallScope='Current Windows user; 3060 local delivery only'

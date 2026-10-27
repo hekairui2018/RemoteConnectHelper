@@ -40,8 +40,8 @@ public static class NegativeClientStatus
             if(result!=null){Log.Write("连接状态回读 source=PP-OCR status="+result.Status);return result;}
         }catch(OperationCanceledException){throw;}
         catch(Exception ex){Log.Write("连接状态PP-OCR不可用 "+ex.GetType().Name);}
-        var fallback=await ScreenOps.OcrAsync(bitmap);token.ThrowIfCancellationRequested();
-        return fallback==null?null:FromText(string.Join("\n",fallback.Words.Select(w=>w.Text)));
+        token.ThrowIfCancellationRequested();
+        return null;
     }
     public static async Task<ConnectResult?> ReadAsync(IntPtr window,CancellationToken token)
     {

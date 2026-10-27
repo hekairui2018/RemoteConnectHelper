@@ -93,7 +93,7 @@
     </Grid>
     <Border x:Name="PreviewFooter" Grid.Row="2" Height="28" Background="{DynamicResource ThemeWhite}" BorderBrush="{DynamicResource ThemeE6EBF2}" BorderThickness="0,1,0,0" Padding="10,0"
       MouseLeftButtonDown="Header_Down" MouseMove="Header_Move" MouseLeftButtonUp="Header_Up" LostMouseCapture="Header_LostCapture" Cursor="SizeAll">
-     <TextBlock x:Name="PreviewEngineText" Text="文字识别：PP-OCRv5 · RapidOCR ｜ 备用：Windows OCR" FontSize="10.5" Foreground="{DynamicResource Theme7B8798}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="PP-OCRv5（PaddleOCR）· RapidOCR；方向检测：PP-LCNet；备用识别：Windows OCR"/>
+     <TextBlock x:Name="PreviewEngineText" Text="文字识别：PP-OCRv5 · RapidOCR" FontSize="10.5" Foreground="{DynamicResource Theme7B8798}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="PP-OCRv5（PaddleOCR）· RapidOCR；方向检测：PP-LCNet"/>
     </Border>
 
    </Grid></Grid>

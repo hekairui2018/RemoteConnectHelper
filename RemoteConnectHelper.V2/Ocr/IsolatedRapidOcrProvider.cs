@@ -67,7 +67,7 @@ public sealed class IsolatedRapidOcrProvider : IOcrProvider
             Log.Write($"OCR请求完成 kind={request.Kind} blocks={response.Document?.Blocks.Count??0}");
             return response;
         }catch(OperationCanceledException) when(!token.IsCancellationRequested){
-            Log.Write("OCR工作进程超时，结束当前识别进程");ResetWorker();throw new TimeoutException("OCR识别超时，将尝试备用识别");
+            Log.Write("OCR工作进程超时，结束当前识别进程");ResetWorker();throw new TimeoutException("PP-OCR识别超时，请重试");
         }catch(Exception ex){
             string exit="running";try{if(process?.HasExited==true)exit=$"0x{unchecked((uint)process.ExitCode):X8}";}catch{}
             Log.Write($"OCR工作进程失败 kind={request.Kind} type={ex.GetType().Name} exit={exit}");

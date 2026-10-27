@@ -158,7 +158,7 @@ public partial class ConnectionCard : Window
         if(_controller.Image==null && _controller.Result==null && _controller.Stage==AssistantStage.Confirmed)
         { ClearSensitive(); }
         UpdateWindowDimensions();
-        PreviewEngineText.Text=_controller.PreviewText==null?"文字识别：PP-OCRv5 · RapidOCR ｜ 备用：Windows OCR":"文字解析：本机直接解析 · 无需 OCR";
+        PreviewEngineText.Text=_controller.PreviewText==null?"文字识别：PP-OCRv5 · RapidOCR":"文字解析：本机直接解析 · 无需 OCR";
         TitleText.Text=_controller.Stage switch {
             AssistantStage.Recognizing=>"正在识别",AssistantStage.Connecting=>"正在连接",
             AssistantStage.NeedInput when _controller.HasAttemptedConnection&&(_controller.Status.Contains("密码")||_controller.Status.Contains("验证码"))=>"等待输入密码",

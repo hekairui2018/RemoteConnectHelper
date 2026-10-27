@@ -1,12 +1,12 @@
 ﻿# 灰Desk V2
 
-当前测试版：`2.2.0-test.20261021.20`。完整离线安装包见仓库的预发布 Release；安装包内含运行时和模型。
+当前测试版：`2.2.0-test.20261027.21`。完整离线安装包见仓库的预发布 Release；安装包内含运行时和模型。
 
 主要流程为截图或复制图片后，单击悬浮球、按 Ctrl+Alt+R 或点击“识别并连接”。明确点击会重新执行，同图也可重试；“识别”只填入核对区。密码候选最短4字符，仍按字段位置与软件区域配对，不添加图片放大。
 
 默认预览在上、核对区在下，每区384×500、整体384×1000，默认锁定，两区均置顶。可解锁拖动、四边吸附，托盘可显示/收起主界面、切换剪贴板监听和悬浮球。主题和本地壁纸支持静态图片及GIF。
 
-PP-OCRv5通过RapidOcrNet离线运行在独立子进程中；工作进程退出、取消或超时不结束主界面，识别失败尝试Windows OCR。客户端状态侧读取当前可见状态区域并接入PP-OCR，显示失败、等待密码/授权、成功或尚未确认。成功仍需目标、会话控制及连续状态证据；OCR文字不会单独判成功。异常仅写本地日志，未接通自动日志回传。
+PP-OCRv5通过RapidOcrNet离线运行在独立子进程中；工作进程退出、取消或超时不结束主界面，识别失败明确报错，不切换OCR引擎。客户端状态侧读取当前可见状态区域并接入PP-OCR，显示失败、等待密码/授权、成功或尚未确认。成功仍需目标、会话控制及连续状态证据；OCR文字不会单独判成功。异常仅写本地日志，未接通自动日志回传。
 
 向日葵、ToDesk是主要连接适配对象。其他软件有发现/输入或实验性连接路径，不能视为全部客户端均稳定通过真实连接验收。启动时在后台检查正在运行的软件，补充条目或更新经校验的路径，保留名称。
 
@@ -15,11 +15,19 @@ PP-OCRv5通过RapidOcrNet离线运行在独立子进程中；工作进程退出�
 需要x64 Windows 10 19041及以上、.NET 10 SDK。先运行 `scripts/Install-Models.ps1` 安装并校验识别模型；检测与方向模型随固定版本RapidOcrNet依赖提供。
 
 ```powershell
-dotnet publish RemoteConnectHelper.V2.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=false -p:InformationalVersion=2.2.0-test.20261021.20 -p:IncludeSourceRevisionInInformationalVersion=false -p:DebugType=None
+dotnet publish RemoteConnectHelper.V2.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=false -p:InformationalVersion=2.2.0-test.20261027.21 -p:IncludeSourceRevisionInInformationalVersion=false -p:DebugType=None
 ```
 
 原生库提取参数不可省略。安装包脚本见仓库根目录 `installer/README.md`。配置与日志位于 `%APPDATA%\GrayDeskV2`，客户图片和识别凭据不应提交仓库或作为公开Release附件。
 
 ## 验证范围
 
-内部识别回归35/35、状态9/9、模块50/50、OCR隔离10/10、窗口49/49、明确操作17/17、客户端状态23/23。窗口与状态测试包含真实PP-OCR和自建状态窗口，连接器采用受控模拟；这些结果不等于真实远程连接成功率，也不能替代客服机人工实测。历史键盘/前台限制和部分第三方客户端限制仍存在。
+内部识别回归35/35、状态9/9、模块52/52、OCR隔离10/10、窗口49/49、明确操作17/17、客户端状态23/23。窗口与状态测试包含真实PP-OCR和自建状态窗口，连接器采用受控模拟；这些结果不等于真实远程连接成功率，也不能替代客服机人工实测。历史键盘/前台限制和部分第三方客户端限制仍存在。
+
+填码后的核验对整个当前客户端窗口运行 PP-OCR，再按远程目标标题寻找输入行；不启用其他 OCR 引擎。未读清与号码不同分开显示，不使用本机、历史或被遮挡窗口文字作确认。
+
+已有向日葵或 ToDesk 主窗口直接使用；没有主窗口时调用程序入口启动或唤起托盘客户端，再等待界面加载，不结束现有远程软件进程。
+
+输入框定位仅使用隔离 PP-OCR。2026-10-27 在本机真实向日葵与 ToDesk 完成正常显示、最小化、隐藏窗口恢复共 6 次测试，填测试码123456并读回一致，未点连接。向日葵同时填入六位测试密码；ToDesk 连接后密码弹窗未触发。本次不包含冷启动和实际远程连接成功验收。
+
+当前版本已删除 Windows OCR 实现及其调用：所有识别环节只使用 PP-OCR，故障时不会切换引擎。历史版本说明不代表当前行为。

@@ -4,11 +4,11 @@
 
 ## 灰Desk V2 当前测试版
 
-- [下载 .20 中文离线安装包](https://github.com/hekairui2018/RemoteConnectHelper/releases/tag/v2.2.0-test.20261021.20)
+- [下载 20261027.21 中文离线安装包](https://github.com/hekairui2018/RemoteConnectHelper/releases/tag/v2.2.0-test.20261027.21)
 - [二代源码、构建和验证范围](RemoteConnectHelper.V2/README.md)
 - [安装包构建说明](installer/README.md)
 
-悬浮球/快捷键/明确点击识别并连接，同图可重试；预览和核对区默认上下锁定、两区置顶；密码候选最短4字符。PP-OCRv5主识别和客户端状态回读采用离线独立进程，Windows OCR备用。客户端的失败、等待密码/授权、成功和尚未确认分别显示。
+悬浮球/快捷键/明确点击识别并连接，同图可重试；预览和核对区默认上下锁定、两区置顶；密码候选最短4字符。图片识别、输入框定位、整窗填码核验和客户端状态读取全部只使用独立进程中的PP-OCRv5，已移除Windows OCR。客户端的失败、等待密码/授权、成功和尚未确认分别显示。
 
 本仓库公开源码，客户原图、设备码、密码和原始异常包不公开上传。Release使用经核验的安装包，模型和运行时已包含，无需安装.NET。主要适配向日葵与ToDesk，其他软件能力及受控测试边界见二代说明。真实远程连接仍需人工验收。
 

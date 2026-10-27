@@ -11,6 +11,8 @@ public sealed class ConnectionContext
 {
     public RemoteAppKind Kind { get; }
     public IntPtr MainWindow { get; set; }
+    // Explicit local input diagnostic; the callback returns before any connect-button code.
+    internal Func<ScreenOps.Win,double,double,double?,double?,ConnectResult>? InputProbe { get; init; }
     public HashSet<IntPtr> PriorWindows { get; set; } = new();
     public CancellationTokenSource Cts { get; } = new();
     public CancellationToken Token => Cts.Token;

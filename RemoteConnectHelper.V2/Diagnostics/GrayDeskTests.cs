@@ -20,6 +20,39 @@ public static class GrayDeskTests
         OcrTextBlock B(string id,string text,double x,double y,double width=150)=>new(id,text,new Box(x,y,width,25),.99f,"test","original");
         OcrDocument Doc(params OcrTextBlock[] blocks)=>new(blocks,1000,800,"test","original");
         var parser=new RecognitionEngine();
+        await Test("reuse visible client or open its entry point when no main window exists",()=>Run(()=>{
+            var window=new ScreenOps.Win{Hwnd=new IntPtr(123),W=1000,H=640};int launches=0;
+            var existing=ScreenOps.AcquireMainWindow(()=>window,["client.exe"],_=>{launches++;return null;});
+            Check(ReferenceEquals(existing,window)&&launches==0,"Existing main window unnecessarily launched another client");
+            var opened=ScreenOps.AcquireMainWindow(()=>null,["client.exe"],_=>{launches++;return window;});
+            Check(ReferenceEquals(opened,window)&&launches==1,"Missing or tray-only main window did not invoke entry point");
+            launches=0;
+            opened=ScreenOps.AcquireMainWindow(()=>null,["old.exe","actual.exe","ACTUAL.exe"],path=>{launches++;return path=="actual.exe"?window:null;});
+            Check(ReferenceEquals(opened,window)&&launches==2,"Alternate verified path not used");
+            Check(ScreenOps.AcquireMainWindow(()=>null,[],_=>throw new Exception("Unexpected launch"))==null,"No available entry should report unavailable");
+        }));
+        await Test("whole-window readback re-locates remote input beyond click band",()=>Run(()=>{
+            RemoteConnectHelper.Recognition.OcrWord W(string text,double x,double y,double width=160)=>new(){Text=text,X=x,Y=y,W=width,H=22};
+            RemoteConnectHelper.Recognition.OcrDoc D(params RemoteConnectHelper.Recognition.OcrWord[] words)=>new(){Words=words.ToList(),ImgWidth=1200,ImgHeight=800};
+            var doc=D(W("设备代码",40,110),W("987 654 321",40,155),W("远程控制设备",40,260),W("123",40,310,30),W("456",80,310,30),W("789",120,310,30));
+            Check(WindowCodeVerification.Evaluate(doc,"123456789",345)==CodeReadback.Matched,"Full-row split code lost when click was right of text or y shifted");
+            Check(WindowCodeVerification.Evaluate(doc,"987654321",345)==CodeReadback.Mismatch,"Local ID falsely verified remote target");
+            doc.Words.RemoveAll(w=>w.Y==310);
+            doc.Words.Add(W("最近连接",40,400));doc.Words.Add(W("123456789",40,440));
+            Check(WindowCodeVerification.Evaluate(doc,"123456789",345)==CodeReadback.Unreadable,"History accepted as remote input");
+            doc.Words.Add(W("请输入设备代码",40,310));
+            Check(WindowCodeVerification.Evaluate(doc,"123456789",345)==CodeReadback.Unreadable,"Empty input reported mismatch");
+            doc.Words.Add(W("0123456789",40,310));
+            Check(WindowCodeVerification.Evaluate(doc,"123456789",345)!=CodeReadback.Matched,"Substring of longer ID accepted");
+            Check(CoordOps.VerificationFailure("ToDesk",CodeReadback.Unreadable).Status==ConnectStatus.Uncertain,"Unreadable reported as failure");
+            Check(CoordOps.VerificationFailure("ToDesk",CodeReadback.Mismatch).Status==ConnectStatus.Failed,"Different target not blocked");
+            var sun=D(W("远程协助他人",40,260),W("123456789",40,310));
+            Check(WindowCodeVerification.Evaluate(sun,"123456789",320)==CodeReadback.Matched,"Sunlogin target row lost");
+            var inline=D(W("远程协助他人",40,260),W("123456",40,310,80),W("123456",300,310,80));
+            Check(WindowCodeVerification.Evaluate(inline,"123456",320)==CodeReadback.Matched,"Inline numeric password merged with device code");
+            Check(OcrGeo.NumberField(OcrGeo.BuildLines(inline),290,350)!=null,"Single six-digit filled field not located");
+        }));
+
         await Test("startup discovery adds once, updates path and preserves aliases",()=>Run(()=>{
             var prefs=new Preferences{SoftwareEntries=[new("custom-uu","我的UU",@"C:\old\GameViewer.exe","uu")]};int saves=0;
             var catalog=new SoftwareCatalog(prefs,()=>saves++);
@@ -112,9 +145,9 @@ public static class GrayDeskTests
             Check(c.Stage==AssistantStage.Confirmed,"Confirmed status missing");c.ForgetFinished(c.SessionId);Check(c.Result==null,"Confirmed view retained");
         });
         await Test("ordinary background image gets only one primary OCR without fallback",async()=>{
-            var primary=new CounterOcr();var fallback=new CounterOcr();using var pipeline=new RecognitionPipeline(primary,fallback);
+            var primary=new CounterOcr();using var pipeline=new RecognitionPipeline(primary);
             var r=await pipeline.AnalyzeAsync([1,2,3],CancellationToken.None,null,true);
-            Check(primary.Calls==1&&fallback.Calls==0&&r.SelectedCode==null,"Irrelevant image ran full OCR rounds");
+            Check(primary.Calls==1&&r.SelectedCode==null,"Irrelevant image ran full OCR rounds");
         });
         await Test("labelled but incomplete remote screenshot can request manual repair",()=>Run(()=>{
             var result=parser.Analyze(Doc(B("s","ToDesk",10,10),B("l","设备代码",10,70)));

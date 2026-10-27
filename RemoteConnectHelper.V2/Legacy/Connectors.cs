@@ -8,6 +8,8 @@ using SD = System.Drawing;
 
 namespace RemoteConnectHelper.Automation;
 
+internal enum CodeReadback { Unreadable, Matched, Mismatch }
+
 public enum ConnectStatus { Launched, NeedPassword, Failed, Cancelled, Confirmed, Uncertain, Connecting }
 
 public sealed class ConnectResult
@@ -113,7 +115,7 @@ internal static class OcrGeo
         return (hit.Average(w => w.CenterX), hit.Average(w => w.CenterY), x0, x1);
     }
 
-    private static readonly Regex NumSeg = new(@"^\d{3,4}$", RegexOptions.Compiled);
+    private static readonly Regex NumSeg = new(@"^(?:\d{3,4}|\d{6,13})$", RegexOptions.Compiled);
 
     /// <summary>在给定 y 区间内找连续数字段（框里的历史/占位码），返回其整体中心与行中心 y。</summary>
     public static (double Cx, double Cy, double X0, double X1)? NumberField(IEnumerable<Line> lines, double yMin, double yMax)
@@ -122,8 +124,8 @@ internal static class OcrGeo
         foreach (var l in lines)
         {
             if (l.Y < yMin || l.Y > yMax) continue;
-            var nums = l.Words.Where(w => NumSeg.IsMatch((w.Text ?? "").Trim())).OrderBy(w => w.X).ToList();
-            if (nums.Count < 2) continue;
+            var nums = l.Words.Where(w => NumSeg.IsMatch(Regex.Replace(w.Text??"",@"\s+",""))).OrderBy(w => w.X).ToList();
+            if (nums.Count == 0) continue;
             var group = new List<OcrWord> { nums[0] };
             for (int i = 1; i < nums.Count; i++)
             {
@@ -131,7 +133,8 @@ internal static class OcrGeo
                 double gap = nums[i].X - prev.Right;
                 if (gap < prev.H * 1.4 + 26) group.Add(nums[i]);
             }
-            if (group.Count >= 2 && group.Count > best.Count) best = group;
+            int digits=group.Sum(w=>Regex.Replace(w.Text,@"\s+","").Length);
+            if (digits>=6&&digits<=13&&group.Count > best.Count) best = group;
         }
         if (best.Count == 0) return null;
         double x0 = best.Min(w => w.X), x1 = best.Max(w => w.Right);
@@ -158,17 +161,23 @@ internal static class CoordOps
         ctx?.ThrowIfCancellationRequested();
     }
 
-    public static bool VerifyCode(ScreenOps.Win win,string code,double x,double y)
+    public static CodeReadback VerifyCode(ScreenOps.Win win,string code,double x,double y,ConnectionContext? ctx=null)
     {
-        if(!ScreenOps.IsClickTargetUncovered(win.Hwnd,win.X+(int)x,win.Y+(int)y))return false;
-        // Blur on the already-located field heading so the caret cannot mask the final digit.
-        if(y>50&&ScreenOps.IsClickTargetUncovered(win.Hwnd,win.X+(int)x,win.Y+(int)y-44)){
+        var token=ctx?.Token??CancellationToken.None;
+        token.ThrowIfCancellationRequested();
+        if(!ScreenOps.IsClickTargetUncovered(win.Hwnd,win.X+(int)x,win.Y+(int)y))return CodeReadback.Unreadable;
+        // Blur the caret, then recognize the entire current client window, without a crop or resize.
+        if(y>50&&ScreenOps.IsClickTargetUncovered(win.Hwnd,win.X+(int)x,win.Y+(int)y-44))
             ScreenOps.ClickClient(win,x,y-44,120);
-        }
-        using var image=ScreenOps.CaptureClient(win);var doc=ScreenOps.OcrAsync(image).GetAwaiter().GetResult();
-        if(doc==null)return false;
-        return OcrGeo.BuildLines(doc).Where(l=>Math.Abs(l.Y-y)<32).Any(l=>System.Text.RegularExpressions.Regex.Replace(string.Concat(l.Words.Where(w=>Math.Abs(w.CenterX-x)<160).Select(w=>w.Text)),@"[\s-]","").Contains(code,StringComparison.Ordinal));
+        using var image=ScreenOps.CaptureClient(win);
+        bool Visible(OcrWord word)=>new[]{.1,.5,.9}.All(part=>ScreenOps.IsClickTargetUncovered(win.Hwnd,
+            win.X+(int)(word.X+word.W*part),win.Y+(int)word.CenterY));
+        return RemoteConnectHelper.V2.Connections.WindowCodeVerification.ReadAsync(image,code,y,token,Visible).GetAwaiter().GetResult();
     }
+    public static ConnectResult VerificationFailure(string app,CodeReadback result)
+        => result==CodeReadback.Mismatch
+            ? ConnectResult.Fail(app+"目标输入框读到的设备码与本次目标不同，已停止连接，请检查输入框")
+            : ConnectResult.Unknown(app+"整窗识别未能读清目标输入框，尚未点击连接；请移开遮挡后重试，或在客户端手动连接");
     public static void Fill(ScreenOps.Win win, double cx, double cy, string text,
                             ConnectionContext? ctx = null, bool slow = false)
     {
@@ -239,9 +248,12 @@ public sealed class SunloginConnector : IRemoteConnector
             Logger.Info($"向日葵 定位 设备码@({codeCx:F0},{codeCy:F0}) 验证码框={(havePwdBox ? $"({pwdCx:F0},{pwdCy:F0})" : "无")}");
 
             FillCredentials(win, codeCx, codeCy, pwdCx, pwdCy, deviceCode, password, ctx);
-            if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy)){
-                FillCredentials(win,codeCx,codeCy,pwdCx,pwdCy,deviceCode,password,ctx,slow:true);
-                if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy))return ConnectResult.Fail("向日葵设备码填入后核对不一致，已停止连接，请检查输入框");
+            if(ctx?.InputProbe!=null)return ctx.InputProbe(win,codeCx,codeCy,pwdCx,pwdCy);
+            var verification=CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy,ctx);
+            if(verification!=CodeReadback.Matched){
+                if(verification==CodeReadback.Mismatch)FillCredentials(win,codeCx,codeCy,pwdCx,pwdCy,deviceCode,password,ctx,slow:true);
+                verification=CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy,ctx);
+                if(verification!=CodeReadback.Matched)return CoordOps.VerificationFailure("向日葵",verification);
             }
         }
 
@@ -369,9 +381,12 @@ public sealed class ToDeskConnector : IRemoteConnector
 
             Logger.Info($"ToDesk 定位 设备码@({codeCx:F0},{codeCy:F0})");
             CoordOps.Fill(win, codeCx, codeCy, deviceCode, ctx);
-            if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy)){
-                CoordOps.Fill(win,codeCx,codeCy,deviceCode,ctx,slow:true);
-                if(!CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy))return ConnectResult.Fail("ToDesk设备码填入后核对不一致，已停止连接，请检查输入框");
+            if(ctx?.InputProbe!=null)return ctx.InputProbe(win,codeCx,codeCy,null,null);
+            var verification=CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy,ctx);
+            if(verification!=CodeReadback.Matched){
+                if(verification==CodeReadback.Mismatch)CoordOps.Fill(win,codeCx,codeCy,deviceCode,ctx,slow:true);
+                verification=CoordOps.VerifyCode(win,deviceCode,codeCx,codeCy,ctx);
+                if(verification!=CodeReadback.Matched)return CoordOps.VerificationFailure("ToDesk",verification);
             }
             Logger.Info("ToDesk设备码已填入并回读核对");
         }

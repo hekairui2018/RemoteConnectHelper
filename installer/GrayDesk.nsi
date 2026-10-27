@@ -15,7 +15,7 @@
   !error "Pass /DAPPICON=<application ico>"
 !endif
 
-!define APP_VERSION "2.2.0-test.20261021.20"
+!define APP_VERSION "2.2.0-test.20261027.21"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\GrayDesk"
 Name "灰Desk"
 Caption "灰Desk 安装向导"
@@ -28,11 +28,11 @@ Icon "${APPICON}"
 UninstallIcon "${APPICON}"
 SetCompressor /SOLID lzma
 SetCompressorDictSize 64
-VIProductVersion "2.2.0.20"
+VIProductVersion "2.2.0.21"
 VIAddVersionKey /LANG=2052 "ProductName" "灰Desk"
 VIAddVersionKey /LANG=2052 "FileDescription" "灰Desk 中文离线安装包"
 VIAddVersionKey /LANG=2052 "ProductVersion" "${APP_VERSION}"
-VIAddVersionKey /LANG=2052 "FileVersion" "2.2.0.20"
+VIAddVersionKey /LANG=2052 "FileVersion" "2.2.0.21"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "灰Desk"
 
 !define MUI_ICON "${APPICON}"

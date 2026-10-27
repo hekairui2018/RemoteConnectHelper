@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -759,7 +759,7 @@ public static class DesktopInteractionTests
                 Check(overlay.Children.OfType<System.Windows.Shapes.Rectangle>().All(m=>m.StrokeThickness*rig.Card.PreviewZoom<2.1),"Mark outline grows over characters during zoom");
                 var close=Control<Button>(rig.Card,"PreviewCloseButton");Check(close.IsVisible&&close.Opacity==1,"Image close is hidden or translucent");
                 CheckToolbarAlignment(rig.Card);
-                rig.Controller.ShowMessage("密码包含易混或低置信度字符，备用 OCR 未能独立确认，请核对");await Settle();
+                rig.Controller.ShowMessage("密码包含易混或低置信度字符，请核对原图");await Settle();
                 Check(Control<TextBlock>(rig.Card,"RiskText").Visibility==Visibility.Visible,"Specific reason is hidden in status card");
                 Capture(rig.Card,"30-信息归主界面与放大标记");
                 Click(rig.Card,"PreviewCloseButton");await Settle();

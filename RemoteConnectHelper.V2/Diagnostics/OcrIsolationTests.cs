@@ -56,10 +56,10 @@ public static class OcrIsolationTests
             bool failed=false;try{await read;}catch(IOException){failed=true;}
             Check(failed&&provider.WorkerId==null,"Force-killed inference cannot kill desktop caller");
         });
-        await Case("Windows fallback",async()=>{
+        await Case("PP-OCR failure is explicit without alternate engine",async()=>{
             using var pipeline=new RecognitionPipeline(new IsolatedRapidOcrProvider{TestWorkerArgument="--ocr-worker-test-exit"});
-            var result=await pipeline.AnalyzeAsync(image,CancellationToken.None);
-            Check(result.DeviceCode=="123456789","Windows OCR fallback still extracts device code after worker exit");
+            bool failed=false;try{await pipeline.AnalyzeAsync(image,CancellationToken.None);}catch(InvalidOperationException ex){failed=ex.Message.Contains("PP-OCR");}
+            Check(failed,"PP-OCR worker failure must report unavailable instead of switching engines");
         });
         File.WriteAllText(Path.Combine(output,"OCR隔离验收.json"),JsonSerializer.Serialize(new{Passed=failures==0,Tests=rows},new JsonSerializerOptions{WriteIndented=true}));
         return failures==0?0:1;

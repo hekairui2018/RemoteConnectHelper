@@ -327,7 +327,24 @@ public static class ScreenOps
 
     /// <summary>OCR 客户区截图。</summary>
     public static Task<OcrDoc?> OcrAsync(SD.Bitmap bmp)
-        => OcrService.RecognizeAsync(ToBitmapSource(bmp));
+        => ReadClientTextAsync(bmp,CancellationToken.None);
+
+    internal static async Task<OcrDoc?> ReadClientTextAsync(SD.Bitmap bmp,CancellationToken token)
+    {
+        try{
+            using var stream=new MemoryStream();bmp.Save(stream,SD.Imaging.ImageFormat.Png);
+            var document=await RemoteConnectHelper.V2.Connections.NegativeClientStatus.StatusOcr.ReadAsync(stream.ToArray(),0,false,token);
+            if(document.Blocks.Count>0){
+                var words=document.Blocks.Select(b=>new OcrWord{Text=b.Text,X=b.Layout.X,Y=b.Layout.Y,W=b.Layout.Width,H=b.Layout.Height}).ToList();
+                Logger.Info("输入框定位 engine=PP-OCR");
+                return new OcrDoc{Words=words,ImgWidth=document.Width,ImgHeight=document.Height,
+                    FullText=string.Join("\n",words.Select(w=>w.Text)),FlatText=string.Concat(words.Select(w=>w.Text))};
+            }
+        }catch(OperationCanceledException){throw;}
+        catch(Exception ex){Logger.Warn("输入框PP-OCR不可用 "+ex.GetType().Name);throw new InvalidOperationException("PP-OCR输入框识别不可用，请重试",ex);}
+        token.ThrowIfCancellationRequested();
+        return new OcrDoc{ImgWidth=bmp.Width,ImgHeight=bmp.Height};
+    }
 
     /// <summary>
     /// 恢复/前置窗口后循环截图 OCR，直到界面出现锚点文字（界面渲染完成）或超时。
@@ -349,7 +366,7 @@ public static class ScreenOps
                 CheckCancel(ctx);
                 bmp?.Dispose();
                 bmp = CaptureClient(win);
-                doc = OcrAsync(bmp).GetAwaiter().GetResult();
+                doc = ReadClientTextAsync(bmp,ctx?.Token??CancellationToken.None).GetAwaiter().GetResult();
                 if (doc != null && anchors.Any(a => (doc.FlatText ?? "").Contains(a)))
                     return (bmp, doc, true);
                 bmp.Dispose();
@@ -359,7 +376,7 @@ public static class ScreenOps
             }
             CheckCancel(ctx);
             bmp = CaptureClient(win);
-            doc = OcrAsync(bmp).GetAwaiter().GetResult();
+            doc = ReadClientTextAsync(bmp,ctx?.Token??CancellationToken.None).GetAwaiter().GetResult();
             bool readyNow = doc != null && anchors.Any(a => (doc.FlatText ?? "").Contains(a));
             return (bmp, doc, readyNow);
         }
@@ -375,29 +392,42 @@ public static class ScreenOps
         }
     }
 
-    /// <summary>已运行则复用，否则启动；otherProcesses 会被最小化以防点错。</summary>
+    internal static Win? AcquireMainWindow(Func<Win?> find,IEnumerable<string> paths,Func<string,Win?> launch)
+    {
+        var existing=find();
+        if(existing!=null)return existing;
+        foreach(var path in paths.Where(p=>!string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase)){
+            var opened=launch(path);
+            if(opened!=null)return opened;
+        }
+        return find();
+    }
+
+    /// <summary>已打开就复用；无主窗则启动程序入口或唤起托盘中的单实例客户端，保留所有既有会话。</summary>
     public static Win? Ensure(string[] exePaths, string[] processNames, string[] classContains, string[] classExclude,
                               string[] otherProcesses, ConnectionContext? ctx = null)
     {
-        var win = FindWindow(processNames, classContains, classExclude);
-        if (win == null)
-        {
-            int reside = 0;
-            foreach (var pn in processNames) reside += Process.GetProcessesByName(pn).Length;
-            if(reside>0)return null; // A running client may own hidden sessions; never restart it.
-            Logger.Info($"Ensure 未找到现存主窗（{string.Join("/", processNames)}，驻留进程 {reside} 个），开始启动/唤起");
-            foreach (var exe in exePaths)
-                if (!string.IsNullOrEmpty(exe) && File.Exists(exe))
-                {
-                    win = Launch(exe, processNames, classContains, classExclude, ctx);
-                    if (win != null) break;
+        CheckCancel(ctx);
+        var paths=exePaths.Where(p=>!string.IsNullOrWhiteSpace(p)&&File.Exists(p)).ToList();
+        // A running main executable is also a valid entry point if its saved installation path moved.
+        foreach(var name in processNames)
+            foreach(var process in Process.GetProcessesByName(name))
+                using(process){
+                    try{
+                        var path=process.MainModule?.FileName;
+                        if(path!=null&&File.Exists(path)&&Path.GetFileNameWithoutExtension(path).Equals(name,StringComparison.OrdinalIgnoreCase))paths.Add(path);
+                    }catch{ }
                 }
-        }
+        var win=AcquireMainWindow(()=>FindWindow(processNames,classContains,classExclude),paths,exe=>{
+            CheckCancel(ctx);
+            Logger.Info("未找到远程软件主界面，调用程序入口启动或唤起");
+            return Launch(exe,processNames,classContains,classExclude,ctx);
+        });
         // 已驻留托盘但主窗被隐藏（不可见且非最小化）：再启动一次 exe 唤起单实例主窗，
         // 比单纯 ShowWindow 可靠（ToDesk 隐藏窗强拉会白屏不渲染）。
         if (win != null && !IsWindowVisible(win.Hwnd) && !IsIconic(win.Hwnd))
         {
-            foreach (var exe in exePaths)
+            foreach (var exe in paths.Distinct(StringComparer.OrdinalIgnoreCase))
                 if (!string.IsNullOrEmpty(exe) && File.Exists(exe))
                 {
                     try

@@ -1,5 +1,4 @@
 ﻿using System.Diagnostics;
-using System.Windows.Media.Imaging;
 using RapidOcrNet;
 using RemoteConnectHelper.V2.Domain;
 using SkiaSharp;
@@ -106,33 +105,4 @@ public sealed class RapidOcrProvider : IOcrProvider
         finally { _gate.Release(); }
     }
     public void Dispose() { if (_engine.IsValueCreated) _engine.Value.Dispose(); if(_direction.IsValueCreated)_direction.Value.Dispose(); _gate.Dispose(); }
-}
-
-public sealed class WindowsOcrProvider : IOcrProvider
-{
-    public string Name => "Windows OCR（兜底）";
-    public async Task<OcrDocument> ReadAsync(byte[] image, int rotation, bool contrast, CancellationToken cancellationToken)
-    {
-        return await Task.Run(async () =>
-        {
-            var timer = Stopwatch.StartNew();
-            using var prepared = ImagePreparation.Prepare(image, rotation, contrast);
-            using var encoded = prepared.Encode(SKEncodedImageFormat.Png, 100);
-            using var stream = new MemoryStream(encoded.ToArray());
-            var source = new BitmapImage(); source.BeginInit(); source.CacheOption = BitmapCacheOption.OnLoad;
-            source.StreamSource = stream; source.EndInit(); source.Freeze();
-            cancellationToken.ThrowIfCancellationRequested();
-            var result = await RemoteConnectHelper.Services.OcrService.RecognizeAsync(source);
-            cancellationToken.ThrowIfCancellationRequested();
-            using var original = SKBitmap.Decode(image);
-            string variant = (contrast ? "高对比" : "原图") + "/" + rotation;
-            var blocks = result?.Words.Select((w, i) =>
-            {
-                var box = new Box(w.X, w.Y, w.W, w.H);
-                return new OcrTextBlock("windows-" + i, w.Text, ImagePreparation.ToOriginal(box, rotation, original.Width, original.Height), null, Name, variant, box);
-            }).ToArray() ?? [];
-            return new OcrDocument(blocks, original.Width, original.Height, Name, variant, rotation, timer.ElapsedMilliseconds);
-        }, cancellationToken);
-    }
-    public void Dispose() { }
 }
